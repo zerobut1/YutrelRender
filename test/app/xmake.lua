@@ -17,5 +17,5 @@ target("test_Yutrel_scene_loader")
 
     add_files("test_scene_loader.cpp", "../../src/app/scene_loader.cpp")
     add_includedirs("../../src/app", "$(projectdir)/ext/LuisaCompute/src/tests")
-    add_deps("YutrelPbrt")
+    add_deps("YutrelPbrt", "YutrelUsd")
 target_end()

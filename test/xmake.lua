@@ -1,1 +1,1 @@
-includes("core", "pbrt", "app")
+includes("core", "pbrt", "usd", "app")

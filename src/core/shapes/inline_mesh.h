@@ -88,6 +88,10 @@ public:
         }
         return luisa::nullopt;
     }
+    [[nodiscard]] const auto& positions() const noexcept { return _positions; }
+    [[nodiscard]] const auto& normals() const noexcept { return _normals; }
+    [[nodiscard]] const auto& uvs() const noexcept { return _uvs; }
+    [[nodiscard]] const auto& indices() const noexcept { return _indices; }
     [[nodiscard]] const Shape* build(SceneBuilder& builder) const noexcept override;
 };
 

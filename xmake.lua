@@ -5,6 +5,14 @@ set_encodings("utf-8")
 
 add_requires("tinyexr")
 add_requires("assimp")
+add_requires("usd", {
+    configs = {
+        monolithic = true,
+        image = false,
+        python = false,
+        tools = false,
+    },
+})
 
 if is_host("windows") then
     lc_options = {

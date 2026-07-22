@@ -1,0 +1,10 @@
+target("test_Yutrel_usd_import")
+    set_kind("binary")
+    set_default(false)
+    set_group("tests/Yutrel/usd")
+    set_rundir("$(projectdir)")
+
+    add_files("test_usd_import.cpp")
+    add_includedirs("$(projectdir)/ext/LuisaCompute/src/tests")
+    add_deps("YutrelUsd")
+target_end()

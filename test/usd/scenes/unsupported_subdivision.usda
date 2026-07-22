@@ -1,0 +1,13 @@
+#usda 1.0
+
+def Camera "Camera"
+{
+}
+
+def Mesh "Mesh"
+{
+    int[] faceVertexCounts = [3]
+    int[] faceVertexIndices = [0, 1, 2]
+    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+    uniform token subdivisionScheme = "catmullClark"
+}

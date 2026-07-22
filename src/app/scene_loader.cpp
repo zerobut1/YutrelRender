@@ -5,6 +5,7 @@
 #include <string>
 
 #include "pbrt/pbrt_importer.h"
+#include "usd/usd_importer.h"
 
 namespace Yutrel
 {
@@ -33,6 +34,20 @@ SceneSpec load_scene(
         return PbrtImporter::import(
             path,
             PbrtImportOptions{
+                .spp        = overrides.spp,
+                .seed       = overrides.seed,
+                .resolution = overrides.resolution,
+                .output     = overrides.output,
+            });
+    }
+    if (extension == ".usd" ||
+        extension == ".usda" ||
+        extension == ".usdc" ||
+        extension == ".usdz")
+    {
+        return UsdImporter::import(
+            path,
+            UsdImportOptions{
                 .spp        = overrides.spp,
                 .seed       = overrides.seed,
                 .resolution = overrides.resolution,

@@ -17,12 +17,22 @@ target("YutrelPbrt")
     add_deps("YutrelCore", {public = true})
 target_end()
 
+target("YutrelUsd")
+    set_kind("static")
+    add_files("importers/usd/**.cpp")
+    add_headerfiles("importers/usd/**.h")
+    add_includedirs("importers", {public = true})
+
+    add_deps("YutrelCore", {public = true})
+    add_packages("usd", {public = true})
+target_end()
+
 target("Yutrel")
     set_kind("binary")
     set_rundir("$(projectdir)")
 
     add_files("app/**.cpp")
     add_includedirs("app")
-    add_deps("YutrelCore", "YutrelPbrt")
+    add_deps("YutrelCore", "YutrelPbrt", "YutrelUsd")
 
 target_end()

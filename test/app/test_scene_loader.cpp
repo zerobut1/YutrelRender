@@ -1,5 +1,6 @@
 #include "ut/ut.hpp"
 
+#include <array>
 #include <stdexcept>
 #include <string>
 
@@ -23,6 +24,34 @@ static auto test_scene_loader_registration = []
             rejected = std::string{error.what()}.find(".gltf") != std::string::npos;
         }
         expect(rejected);
+    };
+
+    "dispatch_all_usd_extensions_case_insensitively"_test = []
+    {
+        constexpr std::array extensions{".usd", ".USDA", ".UsDc", ".USDZ"};
+        for (auto extension : extensions)
+        {
+            auto dispatched = false;
+            try
+            {
+                (void)load_scene(std::string{"test/app/missing"} + extension, {});
+            }
+            catch (const std::runtime_error& error)
+            {
+                auto message = std::string{error.what()};
+                dispatched   = message.find("not a regular file") != std::string::npos &&
+                               message.find("Unsupported scene format") == std::string::npos;
+            }
+            expect(dispatched);
+        }
+    };
+
+    "load_usdc_scene"_test = []
+    {
+        auto spec = load_scene("scene/blender-basic/scene.usdc", {});
+        expect(spec.instances().size() == 2u);
+        expect(spec.lights().size() == 1u);
+        expect(spec.cameras().size() == 1u);
     };
     return 0;
 }();
