@@ -23,6 +23,9 @@ task.md
 AGENTS.md
 .agents
 __pycache__
+.pytest_cache/
+.ruff_cache/
+.venv/
 projects/Yutrel/scene
 projects/Yutrel/scenes
 scene
