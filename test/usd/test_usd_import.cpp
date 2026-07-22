@@ -6,6 +6,7 @@
 #include <string>
 
 #include "cameras/pinhole.h"
+#include "environments/uniform.h"
 #include "samplers/zsobol.h"
 #include "shapes/inline_mesh.h"
 #include "shapes/sphere.h"
@@ -44,12 +45,12 @@ static auto test_usd_import_registration = []
 {
     "import_blender_basic_scene"_test = []
     {
-        auto spec = UsdImporter::import("scene/blender-basic/scene.usdc");
+        auto spec = UsdImporter::import("scene/blender-basic/scene.usda");
 
         expect(spec.instances().size() == 2u);
         expect(spec.shapes().size() == 2u);
         expect(spec.surfaces().size() == 2u);
-        expect(spec.textures().size() == 5u);
+        expect(spec.textures().size() == 6u);
         expect(spec.lights().size() == 1u);
         expect(spec.environments().size() == 1u);
         expect(spec.cameras().size() == 1u);
@@ -74,6 +75,14 @@ static auto test_usd_import_registration = []
             spec.cameras().spec(spec.render().camera));
         expect(is_near(camera.fov(), 22.8952f));
 
+        auto&& environment = static_cast<const UniformEnvironmentSpec&>(
+            spec.environments().spec(spec.render().environment));
+        expect(is_near(environment.scale(), 1.0f));
+        auto&& environment_image = static_cast<const ImageTextureSpec&>(
+            spec.textures().spec(environment.emission()));
+        expect(environment_image.path().filename() == "color_0C0C0C.exr");
+        expect(environment_image.encoding() == Texture::Encoding::LINEAR);
+
         auto&& sampler = static_cast<const ZSobolSamplerSpec&>(
             spec.samplers().spec(spec.render().sampler));
         expect(sampler.spp() == 16u);
@@ -96,7 +105,7 @@ static auto test_usd_import_registration = []
     "apply_cli_overrides"_test = []
     {
         auto spec = UsdImporter::import(
-            "scene/blender-basic/scene.usdc",
+            "scene/blender-basic/scene.usda",
             UsdImportOptions{
                 .spp        = 4u,
                 .seed       = 42u,

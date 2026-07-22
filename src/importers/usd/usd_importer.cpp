@@ -48,6 +48,7 @@
 #include "base/film.h"
 #include "cameras/pinhole.h"
 #include "environments/null.h"
+#include "environments/uniform.h"
 #include "filters/gaussian.h"
 #include "integrators/path.h"
 #include "lights/diffuse.h"
@@ -477,6 +478,7 @@ private:
     std::unordered_map<std::string, TextureRef> _texture_cache;
     luisa::optional<SurfaceRef> _default_surface;
     luisa::optional<SurfaceRef> _light_surface;
+    luisa::optional<EnvironmentRef> _environment;
     luisa::optional<CameraRef> _camera;
     luisa::float3 _world_up{0.0f, 1.0f, 0.0f};
 
@@ -525,7 +527,7 @@ public:
             }
             if (prim.IsA<UsdLuxDomeLight>())
             {
-                // The first version intentionally ignores dome lights and uses a null environment.
+                _import_dome_light(UsdLuxDomeLight{prim});
                 continue;
             }
             if (prim.IsA<UsdGeomCamera>())
@@ -548,8 +550,10 @@ public:
             fail(_scene_path, _stage->GetPseudoRoot(), "USD scene must contain exactly one visible perspective camera.");
         }
 
-        auto environment = _builder.add_environment<NullEnvironmentSpec>(
-            spec_meta(_scene_path, "usd_null_environment"));
+        auto environment = _environment
+                               ? *_environment
+                               : _builder.add_environment<NullEnvironmentSpec>(
+                                     spec_meta(_scene_path, "usd_null_environment"));
 
         auto resolution = options.resolution.value_or(default_resolution);
         auto output     = options.output.value_or(
@@ -879,6 +883,81 @@ private:
         {
             fail(_scene_path, prim, "USD light color temperature is not supported.");
         }
+    }
+
+    void _import_dome_light(const UsdLuxDomeLight& light)
+    {
+        auto prim = light.GetPrim();
+        if (_environment)
+        {
+            fail(_scene_path, prim, "USD scene contains multiple visible DomeLights.");
+        }
+        _validate_light_controls(UsdLuxLightAPI{prim}, prim);
+
+        auto intensity = attribute_or(light.GetIntensityAttr(), 1.0f, _scene_path, prim, "inputs:intensity");
+        auto exposure  = attribute_or(light.GetExposureAttr(), 0.0f, _scene_path, prim, "inputs:exposure");
+        auto color     = attribute_or(light.GetColorAttr(), GfVec3f{1.0f}, _scene_path, prim, "inputs:color");
+        if (!std::isfinite(intensity) || intensity < 0.0f || !std::isfinite(exposure))
+        {
+            fail(_scene_path, prim, "DomeLight intensity or exposure is invalid.");
+        }
+        if (!std::isfinite(color[0]) || color[0] < 0.0f ||
+            !std::isfinite(color[1]) || color[1] < 0.0f ||
+            !std::isfinite(color[2]) || color[2] < 0.0f)
+        {
+            fail(_scene_path, prim, "DomeLight color must be finite and non-negative.");
+        }
+
+        auto name         = prim.GetPath().GetString();
+        auto texture_attr = light.GetTextureFileAttr();
+        auto has_texture  = texture_attr && texture_attr.HasAuthoredValueOpinion();
+        auto emission = [&]() -> TextureRef
+        {
+            if (has_texture)
+            {
+                SdfAssetPath file;
+                if (!texture_attr.Get(&file))
+                {
+                    fail(_scene_path, prim, "Failed to read DomeLight inputs:texture:file.");
+                }
+                auto path  = resolve_asset_path(file, _scene_path, prim, "DomeLight");
+                auto image = LoadedImage::load(path);
+                if (image.size().x != 1u || image.size().y != 1u)
+                {
+                    fail(_scene_path, prim, "Only uniform 1x1 DomeLight textures are currently supported.");
+                }
+                auto color_space = attribute_or(
+                    prim.GetAttribute(TfToken{"colorSpace:name"}),
+                    TfToken{"auto"},
+                    _scene_path,
+                    prim,
+                    "colorSpace:name");
+                auto encoding = texture_encoding(color_space, path, _scene_path, prim);
+                auto result = _builder.add_texture<ImageTextureSpec>(
+                    spec_meta(_scene_path, name + "::emission"),
+                    std::move(path),
+                    TextureSampler::point_edge(),
+                    encoding);
+                if (!is_near(color[0], 1.0f) || !is_near(color[1], 1.0f) || !is_near(color[2], 1.0f))
+                {
+                    result = _builder.add_texture<ScaleTextureSpec>(
+                        spec_meta(_scene_path, name + "::tint"),
+                        result,
+                        luisa::make_float4(color[0], color[1], color[2], 1.0f),
+                        luisa::make_float4(0.0f));
+                }
+                return result;
+            }
+            return _constant_texture(
+                prim,
+                name + "::emission",
+                luisa::make_float4(color[0], color[1], color[2], 1.0f));
+        }();
+
+        _environment = _builder.add_environment<UniformEnvironmentSpec>(
+            spec_meta(_scene_path, name),
+            emission,
+            intensity * std::exp2(exposure));
     }
 
     void _import_sphere_light(const UsdLuxSphereLight& light)
