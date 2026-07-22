@@ -88,7 +88,7 @@ static auto test_pbrt_import_registration = []
     {
         auto output = std::filesystem::absolute("override.exr");
         auto spec   = PbrtImporter::import(
-            "tests/scenes/import_geometry.pbrt",
+            "test/scenes/import_geometry.pbrt",
             PbrtImportOptions{
                 .spp        = 16u,
                 .seed       = 42u,
@@ -113,7 +113,7 @@ static auto test_pbrt_import_registration = []
 
     "import_film_exposure"_test = []
     {
-        auto parsed                 = PbrtParser::parse("tests/scenes/import_geometry.pbrt");
+        auto parsed                 = PbrtParser::parse("test/scenes/import_geometry.pbrt");
         parsed.film.iso             = 200.0f;
         parsed.camera.shutter_open  = 0.25f;
         parsed.camera.shutter_close = 0.75f;
@@ -130,7 +130,7 @@ static auto test_pbrt_import_registration = []
             expect(is_near(camera->shutter_span().y, 0.75f));
         }
 
-        auto default_parsed = PbrtParser::parse("tests/scenes/import_geometry.pbrt");
+        auto default_parsed = PbrtParser::parse("test/scenes/import_geometry.pbrt");
         auto default_spec   = PbrtImporter::import(std::move(default_parsed));
         auto default_film   = dynamic_cast<const RGBFilmSpec*>(&default_spec.films().spec(default_spec.render().film));
         auto default_camera = dynamic_cast<const PinholeCameraSpec*>(&default_spec.cameras().spec(default_spec.render().camera));
@@ -210,7 +210,7 @@ static auto test_pbrt_import_registration = []
 
         for (auto&& test_case : cases)
         {
-            auto parsed                  = PbrtParser::parse("tests/scenes/import_geometry.pbrt");
+            auto parsed                  = PbrtParser::parse("test/scenes/import_geometry.pbrt");
             parsed.camera.pbrt_transform = test_case.camera_from_world;
             auto spec                    = PbrtImporter::import(std::move(parsed));
             auto camera                  = dynamic_cast<const PinholeCameraSpec*>(
@@ -228,7 +228,7 @@ static auto test_pbrt_import_registration = []
 
     "import_camera_converts_pbrt_short_axis_fov_to_vertical"_test = []
     {
-        auto parsed             = PbrtParser::parse("tests/scenes/import_geometry.pbrt");
+        auto parsed             = PbrtParser::parse("test/scenes/import_geometry.pbrt");
         parsed.camera.fov       = 30.0f;
         parsed.film.resolution  = make_uint2(1280u, 1800u);
         auto portrait_spec      = PbrtImporter::import(parsed);
@@ -275,7 +275,7 @@ static auto test_pbrt_import_registration = []
         };
         for (auto&& test_case : cases)
         {
-            auto parsed                  = PbrtParser::parse("tests/scenes/import_geometry.pbrt");
+            auto parsed                  = PbrtParser::parse("test/scenes/import_geometry.pbrt");
             parsed.camera.source         = SourceLocation{"bad-camera.pbrt", 77u, 3u};
             parsed.camera.pbrt_transform = test_case.transform;
             auto rejected                = false;
@@ -295,7 +295,7 @@ static auto test_pbrt_import_registration = []
 
     "import_sobol_sampler"_test = []
     {
-        auto parsed                  = PbrtParser::parse("tests/scenes/import_geometry.pbrt");
+        auto parsed                  = PbrtParser::parse("test/scenes/import_geometry.pbrt");
         parsed.sampler.type          = SamplerDesc::Type::Sobol;
         parsed.sampler.pixel_samples = 32u;
         parsed.sampler.seed          = 42u;
@@ -309,7 +309,7 @@ static auto test_pbrt_import_registration = []
 
     "import_zsobol_sampler"_test = []
     {
-        auto parsed                  = PbrtParser::parse("tests/scenes/import_geometry.pbrt");
+        auto parsed                  = PbrtParser::parse("test/scenes/import_geometry.pbrt");
         parsed.sampler.type          = SamplerDesc::Type::ZSobol;
         parsed.sampler.pixel_samples = 32u;
         parsed.sampler.seed          = 42u;
@@ -329,7 +329,7 @@ static auto test_pbrt_import_registration = []
         try
         {
             (void)PbrtImporter::import(
-                "tests/scenes/zsobol_sampler_default.pbrt",
+                "test/scenes/zsobol_sampler_default.pbrt",
                 PbrtImportOptions{.spp = 3u});
         }
         catch (const std::runtime_error& error)
@@ -341,7 +341,7 @@ static auto test_pbrt_import_registration = []
 
     "import_independent_sampler_seed"_test = []
     {
-        auto parsed    = PbrtParser::parse("tests/scenes/import_geometry.pbrt");
+        auto parsed    = PbrtParser::parse("test/scenes/import_geometry.pbrt");
         auto spec      = PbrtImporter::import(std::move(parsed));
         auto&& sampler = static_cast<const IndependentSamplerSpec&>(
             spec.samplers().spec(spec.render().sampler));
@@ -351,7 +351,7 @@ static auto test_pbrt_import_registration = []
 
     "accept_zero_path_maxdepth"_test = []
     {
-        auto parsed                 = PbrtParser::parse("tests/scenes/import_geometry.pbrt");
+        auto parsed                 = PbrtParser::parse("test/scenes/import_geometry.pbrt");
         parsed.integrator.max_depth = 0u;
         auto spec                   = PbrtImporter::import(std::move(parsed));
         auto&& integrator           = spec.integrators().spec(spec.render().integrator);
@@ -360,7 +360,7 @@ static auto test_pbrt_import_registration = []
 
     "import_homogeneous_medium_interfaces_and_volpath"_test = []
     {
-        auto parsed = PbrtParser::parse("tests/scenes/homogeneous_medium.pbrt");
+        auto parsed = PbrtParser::parse("test/scenes/homogeneous_medium.pbrt");
         auto spec   = PbrtImporter::import(std::move(parsed));
         expect(spec.media().size() == 1u);
         expect(spec.instances().size() == 2u);
@@ -379,7 +379,7 @@ static auto test_pbrt_import_registration = []
             spec.integrators().spec(spec.render().integrator));
         expect(!integrator.validate().has_value());
 
-        auto undefined = PbrtParser::parse("tests/scenes/homogeneous_medium_undefined.pbrt");
+        auto undefined = PbrtParser::parse("test/scenes/homogeneous_medium_undefined.pbrt");
         auto rejected  = false;
         try
         {
@@ -396,7 +396,7 @@ static auto test_pbrt_import_registration = []
 
     "pbrt_v4_defaults_are_supported"_test = []
     {
-        auto defaults = PbrtParser::parse("tests/scenes/pbrt_defaults.pbrt");
+        auto defaults = PbrtParser::parse("test/scenes/pbrt_defaults.pbrt");
         expect(defaults.integrator.type == IntegratorDesc::Type::VolPath);
         expect(defaults.integrator.max_depth == 5u);
         expect(defaults.sampler.type == SamplerDesc::Type::ZSobol);
@@ -420,14 +420,14 @@ static auto test_pbrt_import_registration = []
         expect(default_sampler.spp() == 16u);
         expect(default_sampler.seed() == 20120712u);
 
-        auto zsobol            = PbrtParser::parse("tests/scenes/pbrt_defaults.pbrt");
+        auto zsobol            = PbrtParser::parse("test/scenes/pbrt_defaults.pbrt");
         zsobol.integrator.type = IntegratorDesc::Type::Path;
         auto path_spec         = PbrtImporter::import(std::move(zsobol));
         auto&& path_sampler    = static_cast<const ZSobolSamplerSpec&>(
             path_spec.samplers().spec(path_spec.render().sampler));
         expect(!path_sampler.validate().has_value());
 
-        auto gaussian                  = PbrtParser::parse("tests/scenes/pbrt_defaults.pbrt");
+        auto gaussian                  = PbrtParser::parse("test/scenes/pbrt_defaults.pbrt");
         gaussian.integrator.type       = IntegratorDesc::Type::Path;
         gaussian.sampler.type          = SamplerDesc::Type::Independent;
         gaussian.sampler.pixel_samples = 4u;
@@ -446,7 +446,7 @@ static auto test_pbrt_import_registration = []
                  std::numeric_limits<float>::quiet_NaN(),
              })
         {
-            auto scene                  = PbrtParser::parse("tests/scenes/pbrt_defaults.pbrt");
+            auto scene                  = PbrtParser::parse("test/scenes/pbrt_defaults.pbrt");
             scene.integrator.type       = IntegratorDesc::Type::Path;
             scene.sampler.type          = SamplerDesc::Type::Independent;
             scene.sampler.pixel_samples = 4u;
@@ -463,7 +463,7 @@ static auto test_pbrt_import_registration = []
             expect(rejected);
         }
 
-        auto wrong_type                  = PbrtParser::parse("tests/scenes/pbrt_defaults.pbrt");
+        auto wrong_type                  = PbrtParser::parse("test/scenes/pbrt_defaults.pbrt");
         wrong_type.integrator.type       = IntegratorDesc::Type::Path;
         wrong_type.sampler.type          = SamplerDesc::Type::Independent;
         wrong_type.sampler.pixel_samples = 4u;
@@ -481,7 +481,7 @@ static auto test_pbrt_import_registration = []
         }
         expect(wrong_type_rejected);
 
-        auto unequal                  = PbrtParser::parse("tests/scenes/pbrt_defaults.pbrt");
+        auto unequal                  = PbrtParser::parse("test/scenes/pbrt_defaults.pbrt");
         unequal.integrator.type       = IntegratorDesc::Type::Path;
         unequal.sampler.type          = SamplerDesc::Type::Independent;
         unequal.sampler.pixel_samples = 4u;
@@ -500,7 +500,7 @@ static auto test_pbrt_import_registration = []
 
     "reject_halton_sampler"_test = []
     {
-        auto parsed            = PbrtParser::parse("tests/scenes/sobol_sampler_default.pbrt");
+        auto parsed            = PbrtParser::parse("test/scenes/sobol_sampler_default.pbrt");
         parsed.integrator.type = IntegratorDesc::Type::Path;
         parsed.sampler.type    = SamplerDesc::Type::Halton;
         parsed.filter.type     = FilterDesc::Type::Triangle;
@@ -536,7 +536,7 @@ static auto test_pbrt_import_registration = []
         };
         for (auto test_case : cases)
         {
-            auto parsed                 = PbrtParser::parse("tests/scenes/import_geometry.pbrt");
+            auto parsed                 = PbrtParser::parse("test/scenes/import_geometry.pbrt");
             parsed.film.iso             = test_case.iso;
             parsed.camera.shutter_open  = test_case.shutter_open;
             parsed.camera.shutter_close = test_case.shutter_close;
@@ -589,7 +589,7 @@ static auto test_pbrt_import_registration = []
         };
         for (auto test_case : cases)
         {
-            auto scene     = PbrtParser::parse("tests/scenes/strict_import_base.pbrt");
+            auto scene     = PbrtParser::parse("test/scenes/strict_import_base.pbrt");
             auto parameter = test_parameter(test_case.type, test_case.name, test_case.line);
             switch (test_case.target)
             {
@@ -649,7 +649,7 @@ static auto test_pbrt_import_registration = []
 
     "reject_duplicate_and_unused_resource_parameters"_test = []
     {
-        auto duplicate = PbrtParser::parse("tests/scenes/import_geometry.pbrt");
+        auto duplicate = PbrtParser::parse("test/scenes/import_geometry.pbrt");
         duplicate.integrator.parameters.emplace_back(test_parameter("integer", "maxdepth", 30u));
         auto duplicate_rejected = false;
         try
@@ -665,7 +665,7 @@ static auto test_pbrt_import_registration = []
         }
         expect(duplicate_rejected);
 
-        auto unused = PbrtParser::parse("tests/scenes/import_geometry.pbrt");
+        auto unused = PbrtParser::parse("test/scenes/import_geometry.pbrt");
         MaterialDesc unused_material;
         unused_material.source = SourceLocation{"strict_case.pbrt", 40u, 1u};
         unused_material.parameters.emplace_back(test_parameter("texture", "displacement", 41u));
@@ -687,7 +687,7 @@ static auto test_pbrt_import_registration = []
 
     "log_effective_scene_summary_and_resource_details"_test = []
     {
-        auto parsed = PbrtParser::parse("tests/scenes/import_geometry.pbrt");
+        auto parsed = PbrtParser::parse("test/scenes/import_geometry.pbrt");
         std::mutex mutex;
         luisa::vector<luisa::string> messages;
         auto sink = luisa::detail::create_sink_with_callback(
@@ -781,7 +781,7 @@ static auto test_pbrt_import_registration = []
 
     "import_fixture_ply_geometry"_test = []
     {
-        auto parsed = PbrtParser::parse("tests/scenes/import_geometry.pbrt");
+        auto parsed = PbrtParser::parse("test/scenes/import_geometry.pbrt");
         std::array<Matrix4, 3u> expected_transforms{
             parsed.shapes[0u].pbrt_transform,
             parsed.shapes[1u].pbrt_transform,
@@ -800,9 +800,9 @@ static auto test_pbrt_import_registration = []
         expect(instances[1u].surface != instances[2u].surface);
 
         std::array<std::filesystem::path, 3u> expected_paths{
-            std::filesystem::absolute("tests/scenes/mesh_00001.ply"),
-            std::filesystem::absolute("tests/scenes/mesh_00002.ply"),
-            std::filesystem::absolute("tests/scenes/mesh_00003.ply"),
+            std::filesystem::absolute("test/scenes/mesh_00001.ply"),
+            std::filesystem::absolute("test/scenes/mesh_00002.ply"),
+            std::filesystem::absolute("test/scenes/mesh_00003.ply"),
         };
         auto shape_index = 0u;
         spec.shapes().visit_entries([&](ShapeRef, const SpecMeta&, const ShapeSpec* shape)
@@ -852,7 +852,7 @@ static auto test_pbrt_import_registration = []
 
     "reuse_inherited_inline_material"_test = []
     {
-        auto parsed                             = PbrtParser::parse("tests/scenes/import_geometry.pbrt");
+        auto parsed                             = PbrtParser::parse("test/scenes/import_geometry.pbrt");
         parsed.shapes[1u].material.inline_index = parsed.shapes[0u].material.inline_index;
         auto spec                               = PbrtImporter::import(std::move(parsed));
         expect(spec.instances()[0u].surface == spec.instances()[1u].surface);
@@ -860,7 +860,7 @@ static auto test_pbrt_import_registration = []
 
     "import_shape_alpha_as_cached_opacity_surfaces"_test = []
     {
-        auto parsed = PbrtParser::parse("tests/scenes/shape_alpha.pbrt");
+        auto parsed = PbrtParser::parse("test/scenes/shape_alpha.pbrt");
         auto spec   = PbrtImporter::import(std::move(parsed));
         auto instances = spec.instances();
         expect(instances.size() == 6u);
@@ -897,7 +897,7 @@ static auto test_pbrt_import_registration = []
 
     "reject_invalid_shape_alpha_texture_references"_test = []
     {
-        auto nonfinite = PbrtParser::parse("tests/scenes/shape_alpha.pbrt");
+        auto nonfinite = PbrtParser::parse("test/scenes/shape_alpha.pbrt");
         nonfinite.shapes[0u].alpha_texture.reset();
         nonfinite.shapes[0u].alpha = std::numeric_limits<float>::quiet_NaN();
         auto nonfinite_rejected = false;
@@ -911,7 +911,7 @@ static auto test_pbrt_import_registration = []
         }
         expect(nonfinite_rejected);
 
-        auto undefined = PbrtParser::parse("tests/scenes/shape_alpha.pbrt");
+        auto undefined = PbrtParser::parse("test/scenes/shape_alpha.pbrt");
         undefined.shapes[0u].alpha_texture.emplace("missing-alpha");
         auto undefined_rejected = false;
         try
@@ -926,7 +926,7 @@ static auto test_pbrt_import_registration = []
         }
         expect(undefined_rejected);
 
-        auto spectrum = PbrtParser::parse("tests/scenes/shape_alpha.pbrt");
+        auto spectrum = PbrtParser::parse("test/scenes/shape_alpha.pbrt");
         spectrum.shapes[0u].alpha_texture.emplace("spectrum-mask");
         auto spectrum_rejected = false;
         try
@@ -944,7 +944,7 @@ static auto test_pbrt_import_registration = []
 
     "reject_unsupported_coated_displacement"_test = []
     {
-        auto parsed   = PbrtParser::parse("tests/scenes/coated_diffuse_materials.pbrt");
+        auto parsed   = PbrtParser::parse("test/scenes/coated_diffuse_materials.pbrt");
         auto rejected = false;
         try
         {
@@ -978,7 +978,7 @@ static auto test_pbrt_import_registration = []
 
     "import_scaled_imagemap"_test = []
     {
-        auto parsed = PbrtParser::parse("tests/scenes/imagemap_scale_import.pbrt");
+        auto parsed = PbrtParser::parse("test/scenes/imagemap_scale_import.pbrt");
         auto spec   = PbrtImporter::import(std::move(parsed));
 
         const ScaleTextureSpec* scaled = nullptr;
@@ -1001,7 +1001,7 @@ static auto test_pbrt_import_registration = []
 
     "import_imagemap_encodings"_test = []
     {
-        auto parsed  = PbrtParser::parse("tests/scenes/imagemap_encodings.pbrt");
+        auto parsed  = PbrtParser::parse("test/scenes/imagemap_encodings.pbrt");
         auto spec    = PbrtImporter::import(std::move(parsed));
         auto matched = 0u;
         spec.textures().visit_entries([&](TextureRef, const SpecMeta& meta, const TextureSpec* texture)
@@ -1024,7 +1024,7 @@ static auto test_pbrt_import_registration = []
 
     "import_trianglemesh_without_normals"_test = []
     {
-        auto parsed = PbrtParser::parse("tests/scenes/trianglemesh_without_normals.pbrt");
+        auto parsed = PbrtParser::parse("test/scenes/trianglemesh_without_normals.pbrt");
         auto spec   = PbrtImporter::import(std::move(parsed));
         expect(spec.shapes().size() == 1u);
         expect(spec.instances().size() == 1u);
@@ -1032,7 +1032,7 @@ static auto test_pbrt_import_registration = []
 
     "import_checkerboard_textures"_test = []
     {
-        auto parsed = PbrtParser::parse("tests/scenes/checkerboard_textures.pbrt");
+        auto parsed = PbrtParser::parse("test/scenes/checkerboard_textures.pbrt");
         auto spec   = PbrtImporter::import(std::move(parsed));
 
         const CheckerBoardTextureSpec* floor     = nullptr;
@@ -1100,7 +1100,7 @@ static auto test_pbrt_import_registration = []
 
     "reject_invalid_checkerboard_references"_test = []
     {
-        auto unknown = PbrtParser::parse("tests/scenes/checkerboard_textures.pbrt");
+        auto unknown = PbrtParser::parse("test/scenes/checkerboard_textures.pbrt");
         unknown.textures[0u].tex1.texture.emplace("missing-texture");
         auto rejected_unknown = false;
         try
@@ -1116,7 +1116,7 @@ static auto test_pbrt_import_registration = []
         }
         expect(rejected_unknown);
 
-        auto mismatch = PbrtParser::parse("tests/scenes/checkerboard_textures.pbrt");
+        auto mismatch = PbrtParser::parse("test/scenes/checkerboard_textures.pbrt");
         mismatch.textures[0u].tex1.texture.emplace("float-source");
         auto rejected_mismatch = false;
         try
@@ -1135,7 +1135,7 @@ static auto test_pbrt_import_registration = []
 
     "reject_out_of_range_inline_material"_test = []
     {
-        auto parsed                             = PbrtParser::parse("tests/scenes/import_geometry.pbrt");
+        auto parsed                             = PbrtParser::parse("test/scenes/import_geometry.pbrt");
         parsed.shapes[0u].material.inline_index = 99u;
         auto source_located                     = false;
         try
@@ -1145,7 +1145,7 @@ static auto test_pbrt_import_registration = []
         catch (const std::runtime_error& error)
         {
             auto message   = std::string{error.what()};
-            source_located = message.find("tests/scenes/import_geometry.pbrt") != std::string::npos &&
+            source_located = message.find("test/scenes/import_geometry.pbrt") != std::string::npos &&
                              message.find("out-of-range inline material 99") != std::string::npos;
         }
         expect(source_located);
@@ -1153,7 +1153,7 @@ static auto test_pbrt_import_registration = []
 
     "reject_ambiguous_material_binding"_test = []
     {
-        auto parsed                      = PbrtParser::parse("tests/scenes/import_geometry.pbrt");
+        auto parsed                      = PbrtParser::parse("test/scenes/import_geometry.pbrt");
         parsed.shapes[0u].material.named = "named";
         auto source_located              = false;
         try
@@ -1163,7 +1163,7 @@ static auto test_pbrt_import_registration = []
         catch (const std::runtime_error& error)
         {
             auto message   = std::string{error.what()};
-            source_located = message.find("tests/scenes/import_geometry.pbrt") != std::string::npos &&
+            source_located = message.find("test/scenes/import_geometry.pbrt") != std::string::npos &&
                              message.find("both named and inline material bindings") != std::string::npos;
         }
         expect(source_located);
@@ -1171,7 +1171,7 @@ static auto test_pbrt_import_registration = []
 
     "import_inline_coated_diffuse_material"_test = []
     {
-        auto parsed                      = PbrtParser::parse("tests/scenes/import_geometry.pbrt");
+        auto parsed                      = PbrtParser::parse("test/scenes/import_geometry.pbrt");
         parsed.materials[0u].type        = MaterialDesc::Type::CoatedDiffuse;
         parsed.materials[0u].roughness   = 0.1f;
         parsed.materials[0u].u_roughness = 0.1f;
@@ -1187,7 +1187,7 @@ static auto test_pbrt_import_registration = []
 
     "import_named_material_binding"_test = []
     {
-        auto parsed = PbrtParser::parse("tests/scenes/import_geometry.pbrt");
+        auto parsed = PbrtParser::parse("test/scenes/import_geometry.pbrt");
         parsed.named_materials.emplace("named", parsed.materials[0u]);
         parsed.shapes[0u].material.named = "named";
         parsed.shapes[0u].material.inline_index.reset();
@@ -1198,7 +1198,7 @@ static auto test_pbrt_import_registration = []
 
     "reject_missing_ply_file"_test = []
     {
-        auto parsed = PbrtParser::parse("tests/scenes/import_geometry.pbrt");
+        auto parsed = PbrtParser::parse("test/scenes/import_geometry.pbrt");
         parsed.shapes[0u].filename.emplace("missing.ply");
         auto source_located = false;
         try
@@ -1208,7 +1208,7 @@ static auto test_pbrt_import_registration = []
         catch (const std::runtime_error& error)
         {
             auto message   = std::string{error.what()};
-            source_located = message.find("tests/scenes/import_geometry.pbrt") != std::string::npos &&
+            source_located = message.find("test/scenes/import_geometry.pbrt") != std::string::npos &&
                              message.find("regular file") != std::string::npos;
         }
         expect(source_located);
@@ -1216,7 +1216,7 @@ static auto test_pbrt_import_registration = []
 
     "import_uniform_infinite_environment"_test = []
     {
-        auto parsed      = PbrtParser::parse("tests/scenes/infinite_uniform.pbrt");
+        auto parsed      = PbrtParser::parse("test/scenes/infinite_uniform.pbrt");
         auto spec        = PbrtImporter::import(std::move(parsed));
         auto environment = dynamic_cast<const UniformEnvironmentSpec*>(
             &spec.environments().spec(spec.render().environment));
@@ -1242,7 +1242,7 @@ static auto test_pbrt_import_registration = []
                    .validate()
                    .has_value());
 
-        auto default_parsed = PbrtParser::parse("tests/scenes/infinite_missing_filename.pbrt");
+        auto default_parsed = PbrtParser::parse("test/scenes/infinite_missing_filename.pbrt");
         auto default_spec   = PbrtImporter::import(std::move(default_parsed));
         auto default_environment = dynamic_cast<const UniformEnvironmentSpec*>(
             &default_spec.environments().spec(default_spec.render().environment));
@@ -1263,7 +1263,7 @@ static auto test_pbrt_import_registration = []
 
     "import_distant_environment"_test = []
     {
-        auto parsed      = PbrtParser::parse("tests/scenes/distant_basic.pbrt");
+        auto parsed      = PbrtParser::parse("test/scenes/distant_basic.pbrt");
         auto spec        = PbrtImporter::import(std::move(parsed));
         auto environment = dynamic_cast<const DistantEnvironmentSpec*>(
             &spec.environments().spec(spec.render().environment));
@@ -1303,7 +1303,7 @@ static auto test_pbrt_import_registration = []
 
     "import_multiple_environment_lights"_test = []
     {
-        auto parsed = PbrtParser::parse("tests/scenes/multiple_environment_lights.pbrt");
+        auto parsed = PbrtParser::parse("test/scenes/multiple_environment_lights.pbrt");
         auto spec   = PbrtImporter::import(std::move(parsed));
         auto grouped = dynamic_cast<const GroupedEnvironmentSpec*>(
             &spec.environments().spec(spec.render().environment));

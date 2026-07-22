@@ -19,12 +19,10 @@ target_end()
 
 target("Yutrel")
     set_kind("binary")
-    set_rundir("$(projectdir)/projects/Yutrel")
+    set_rundir("$(projectdir)")
 
     add_files("app/**.cpp")
     add_includedirs("app")
     add_deps("YutrelCore", "YutrelPbrt")
 
 target_end()
-
-includes("tests")

@@ -3,7 +3,7 @@ local function yutrel_core_test(name, common)
         set_kind("binary")
         set_default(false)
         set_group("tests/Yutrel/core")
-        set_rundir("$(projectdir)/projects/Yutrel")
+        set_rundir("$(projectdir)")
 
         add_files("test_" .. name .. ".cpp")
         add_includedirs("$(projectdir)/ext/LuisaCompute/src/tests")

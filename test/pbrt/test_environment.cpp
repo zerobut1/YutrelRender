@@ -370,7 +370,7 @@ public:
 
 [[nodiscard]] luisa::unique_ptr<Scene> load_distant_scene()
 {
-    auto parsed = PbrtParser::parse("tests/scenes/distant_basic.pbrt");
+    auto parsed = PbrtParser::parse("test/scenes/distant_basic.pbrt");
     auto spec   = PbrtImporter::import(std::move(parsed));
     auto scene  = Scene::create(spec);
     return dynamic_cast<const DistantEnvironment*>(scene->environment()) == nullptr
@@ -426,7 +426,7 @@ public:
 
 [[nodiscard]] luisa::unique_ptr<Scene> load_uniform_scene()
 {
-    auto parsed = PbrtParser::parse("tests/scenes/infinite_uniform.pbrt");
+    auto parsed = PbrtParser::parse("test/scenes/infinite_uniform.pbrt");
     auto spec   = PbrtImporter::import(std::move(parsed));
     auto scene  = Scene::create(spec);
     return dynamic_cast<const UniformEnvironment*>(scene->environment()) == nullptr
@@ -493,7 +493,7 @@ public:
 
 [[nodiscard]] luisa::unique_ptr<Scene> load_grouped_scene()
 {
-    auto parsed = PbrtParser::parse("tests/scenes/multiple_environment_lights.pbrt");
+    auto parsed = PbrtParser::parse("test/scenes/multiple_environment_lights.pbrt");
     auto spec   = PbrtImporter::import(std::move(parsed));
     auto scene  = Scene::create(spec);
     auto grouped = dynamic_cast<const GroupedEnvironment*>(scene->environment());

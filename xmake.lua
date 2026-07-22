@@ -51,7 +51,8 @@ elseif is_host("macosx") then
 end
 
 includes("ext/LuisaCompute")
-includes("projects")
+includes("src")
+includes("test")
 
 -- Enable CUDA device runtime (cudadevrt) embedding for LuisaCompute CUDA backend.
 -- This removes the runtime warning:

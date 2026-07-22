@@ -20,7 +20,7 @@ int main(int argc, char* argv[])
         return 0;
     }
 
-    auto parsed   = PbrtParser::parse("tests/scenes/alpha_visibility.pbrt");
+    auto parsed   = PbrtParser::parse("test/scenes/alpha_visibility.pbrt");
     auto spec     = PbrtImporter::import(std::move(parsed));
     auto scene    = Scene::create(spec);
     Context context{argv[0]};

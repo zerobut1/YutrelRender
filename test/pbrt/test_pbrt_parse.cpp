@@ -63,12 +63,12 @@ static auto test_pbrt_parse_registration = []
 {
     "parse_film_exposure"_test = []
     {
-        auto scene = PbrtParser::parse("tests/scenes/film_exposure.pbrt");
+        auto scene = PbrtParser::parse("test/scenes/film_exposure.pbrt");
         expect(is_near(scene.film.iso, 200.0f));
         expect(is_near(scene.camera.shutter_open, 0.25f));
         expect(is_near(scene.camera.shutter_close, 0.75f));
 
-        auto defaults = PbrtParser::parse("tests/scenes/import_geometry.pbrt");
+        auto defaults = PbrtParser::parse("test/scenes/import_geometry.pbrt");
         expect(is_near(defaults.film.iso, 100.0f));
         expect(is_near(defaults.camera.shutter_open, 0.0f));
         expect(is_near(defaults.camera.shutter_close, 1.0f));
@@ -76,12 +76,12 @@ static auto test_pbrt_parse_registration = []
 
     "parse_sobol_sampler"_test = []
     {
-        auto scene = PbrtParser::parse("tests/scenes/sobol_sampler.pbrt");
+        auto scene = PbrtParser::parse("test/scenes/sobol_sampler.pbrt");
         expect(scene.sampler.type == SamplerDesc::Type::Sobol);
         expect(scene.sampler.pixel_samples == 32u);
         expect(scene.sampler.seed == 42u);
 
-        auto defaults = PbrtParser::parse("tests/scenes/sobol_sampler_default.pbrt");
+        auto defaults = PbrtParser::parse("test/scenes/sobol_sampler_default.pbrt");
         expect(defaults.sampler.type == SamplerDesc::Type::Sobol);
         expect(defaults.sampler.pixel_samples == 16u);
         expect(defaults.sampler.seed == 20120712u);
@@ -89,12 +89,12 @@ static auto test_pbrt_parse_registration = []
 
     "parse_zsobol_sampler"_test = []
     {
-        auto scene = PbrtParser::parse("tests/scenes/zsobol_sampler.pbrt");
+        auto scene = PbrtParser::parse("test/scenes/zsobol_sampler.pbrt");
         expect(scene.sampler.type == SamplerDesc::Type::ZSobol);
         expect(scene.sampler.pixel_samples == 32u);
         expect(scene.sampler.seed == 42u);
 
-        auto defaults = PbrtParser::parse("tests/scenes/zsobol_sampler_default.pbrt");
+        auto defaults = PbrtParser::parse("test/scenes/zsobol_sampler_default.pbrt");
         expect(defaults.sampler.type == SamplerDesc::Type::ZSobol);
         expect(defaults.sampler.pixel_samples == 16u);
         expect(defaults.sampler.seed == 20120712u);
@@ -103,35 +103,35 @@ static auto test_pbrt_parse_registration = []
     "reject_invalid_sobol_sampler"_test = []
     {
         expect(parse_error_contains(
-            "tests/scenes/sobol_sampler_zero_spp.pbrt",
+            "test/scenes/sobol_sampler_zero_spp.pbrt",
             {"sobol_sampler_zero_spp.pbrt", "pixelsamples", "greater than zero"}));
         expect(parse_error_contains(
-            "tests/scenes/sobol_sampler_bad_randomization.pbrt",
+            "test/scenes/sobol_sampler_bad_randomization.pbrt",
             {"sobol_sampler_bad_randomization.pbrt", "randomization", "fastowen"}));
     };
 
     "reject_invalid_zsobol_sampler"_test = []
     {
         expect(parse_error_contains(
-            "tests/scenes/zsobol_sampler_zero_spp.pbrt",
+            "test/scenes/zsobol_sampler_zero_spp.pbrt",
             {"zsobol_sampler_zero_spp.pbrt", "pixelsamples", "greater than zero"}));
         expect(parse_error_contains(
-            "tests/scenes/zsobol_sampler_non_power_two.pbrt",
+            "test/scenes/zsobol_sampler_non_power_two.pbrt",
             {"zsobol_sampler_non_power_two.pbrt", "pixelsamples", "power of two"}));
         expect(parse_error_contains(
-            "tests/scenes/zsobol_sampler_bad_randomization.pbrt",
+            "test/scenes/zsobol_sampler_bad_randomization.pbrt",
             {"zsobol_sampler_bad_randomization.pbrt", "randomization", "fastowen"}));
     };
 
     "parse_gaussian_filter"_test = []
     {
-        auto defaults = PbrtParser::parse("tests/scenes/pbrt_defaults.pbrt");
+        auto defaults = PbrtParser::parse("test/scenes/pbrt_defaults.pbrt");
         expect(defaults.filter.type == FilterDesc::Type::Gaussian);
         expect(is_near(defaults.filter.radius.x, 1.5f));
         expect(is_near(defaults.filter.radius.y, 1.5f));
         expect(is_near(defaults.filter.sigma, 0.5f));
 
-        auto explicit_filter = PbrtParser::parse("tests/scenes/gaussian_filter.pbrt");
+        auto explicit_filter = PbrtParser::parse("test/scenes/gaussian_filter.pbrt");
         expect(explicit_filter.filter.type == FilterDesc::Type::Gaussian);
         expect(is_near(explicit_filter.filter.radius.x, 1.25f));
         expect(is_near(explicit_filter.filter.radius.y, 1.25f));
@@ -140,7 +140,7 @@ static auto test_pbrt_parse_registration = []
 
     "parse_imagemap_filters"_test = []
     {
-        auto scene = PbrtParser::parse("tests/scenes/imagemap_filters.pbrt");
+        auto scene = PbrtParser::parse("test/scenes/imagemap_filters.pbrt");
         expect(scene.textures.size() == 3u);
         expect(scene.textures[0u].filter == TextureDesc::Filter::Bilinear);
         expect(scene.textures[1u].filter == TextureDesc::Filter::Point);
@@ -149,7 +149,7 @@ static auto test_pbrt_parse_registration = []
 
     "parse_imagemap_encodings"_test = []
     {
-        auto scene = PbrtParser::parse("tests/scenes/imagemap_encodings.pbrt");
+        auto scene = PbrtParser::parse("test/scenes/imagemap_encodings.pbrt");
         expect(scene.textures.size() == 4u);
         expect(scene.textures[0u].encoding == TextureDesc::Encoding::Automatic);
         expect(scene.textures[1u].encoding == TextureDesc::Encoding::Automatic);
@@ -160,19 +160,19 @@ static auto test_pbrt_parse_registration = []
     "reject_invalid_imagemap_encodings"_test = []
     {
         expect(parse_error_contains(
-            "tests/scenes/imagemap_invalid_encoding.pbrt",
+            "test/scenes/imagemap_invalid_encoding.pbrt",
             {"imagemap_invalid_encoding.pbrt", "unsupported imagemap encoding", "gamma 2.2", "linear", "sRGB"}));
         expect(parse_error_contains(
-            "tests/scenes/imagemap_invalid_encoding_type.pbrt",
+            "test/scenes/imagemap_invalid_encoding_type.pbrt",
             {"imagemap_invalid_encoding_type.pbrt", "unsupported parameter", "integer encoding"}));
         expect(parse_error_contains(
-            "tests/scenes/imagemap_duplicate_encoding.pbrt",
+            "test/scenes/imagemap_duplicate_encoding.pbrt",
             {"imagemap_duplicate_encoding.pbrt", "duplicate texture parameter", "string encoding"}));
     };
 
     "parse_imagemap_scale"_test = []
     {
-        auto scene = PbrtParser::parse("tests/scenes/imagemap_scale.pbrt");
+        auto scene = PbrtParser::parse("test/scenes/imagemap_scale.pbrt");
         expect(scene.textures.size() == 2u);
         expect(is_near(scene.textures[0u].image_scale, 0.25f));
         expect(is_near(scene.textures[1u].image_scale, 1.0f));
@@ -180,7 +180,7 @@ static auto test_pbrt_parse_registration = []
 
     "parse_checkerboard_textures"_test = []
     {
-        auto scene = PbrtParser::parse("tests/scenes/checkerboard_textures.pbrt");
+        auto scene = PbrtParser::parse("test/scenes/checkerboard_textures.pbrt");
         expect(scene.textures.size() == 4u);
 
         auto&& floor = scene.textures[0u];
@@ -215,22 +215,22 @@ static auto test_pbrt_parse_registration = []
     "reject_invalid_checkerboard_parameters"_test = []
     {
         expect(parse_error_contains(
-            "tests/scenes/checkerboard_dimension_3.pbrt",
+            "test/scenes/checkerboard_dimension_3.pbrt",
             {"checkerboard_dimension_3.pbrt", "dimension 3", "only 2D"}));
         expect(parse_error_contains(
-            "tests/scenes/checkerboard_mapping_spherical.pbrt",
+            "test/scenes/checkerboard_mapping_spherical.pbrt",
             {"checkerboard_mapping_spherical.pbrt", "mapping 'spherical'", "only 'uv'"}));
         expect(parse_error_contains(
-            "tests/scenes/checkerboard_conflicting_tex1.pbrt",
+            "test/scenes/checkerboard_conflicting_tex1.pbrt",
             {"checkerboard_conflicting_tex1.pbrt", "tex1", "both texture and rgb"}));
         expect(parse_error_contains(
-            "tests/scenes/checkerboard_duplicate_uscale.pbrt",
+            "test/scenes/checkerboard_duplicate_uscale.pbrt",
             {"checkerboard_duplicate_uscale.pbrt", "duplicate texture parameter", "float uscale"}));
         expect(parse_error_contains(
-            "tests/scenes/checkerboard_invalid_input_type.pbrt",
+            "test/scenes/checkerboard_invalid_input_type.pbrt",
             {"checkerboard_invalid_input_type.pbrt", "unsupported parameter", "float tex1"}));
         expect(parse_error_contains(
-            "tests/scenes/checkerboard_nonfinite_scale.pbrt",
+            "test/scenes/checkerboard_nonfinite_scale.pbrt",
             {"checkerboard_nonfinite_scale.pbrt", "UV scale", "finite"}));
     };
 
@@ -243,10 +243,10 @@ static auto test_pbrt_parse_registration = []
             const char* expected;
         };
         std::array cases{
-            Case{"tests/scenes/imagemap_unsupported_filter.pbrt", "imagemap_unsupported_filter.pbrt", "trilinear"},
-            Case{"tests/scenes/imagemap_ewa_filter.pbrt", "imagemap_ewa_filter.pbrt", "ewa"},
-            Case{"tests/scenes/imagemap_anisotropic_filter.pbrt", "imagemap_anisotropic_filter.pbrt", "anisotropic"},
-            Case{"tests/scenes/imagemap_unknown_filter.pbrt", "imagemap_unknown_filter.pbrt", "unknown"},
+            Case{"test/scenes/imagemap_unsupported_filter.pbrt", "imagemap_unsupported_filter.pbrt", "trilinear"},
+            Case{"test/scenes/imagemap_ewa_filter.pbrt", "imagemap_ewa_filter.pbrt", "ewa"},
+            Case{"test/scenes/imagemap_anisotropic_filter.pbrt", "imagemap_anisotropic_filter.pbrt", "anisotropic"},
+            Case{"test/scenes/imagemap_unknown_filter.pbrt", "imagemap_unknown_filter.pbrt", "unknown"},
         };
         for (auto test_case : cases)
         {
@@ -259,17 +259,17 @@ static auto test_pbrt_parse_registration = []
     "reject_invalid_imagemap_filter_declarations"_test = []
     {
         expect(parse_error_contains(
-            "tests/scenes/imagemap_invalid_filter_type.pbrt",
+            "test/scenes/imagemap_invalid_filter_type.pbrt",
             {"imagemap_invalid_filter_type.pbrt", "unsupported parameter", "integer filter"}));
         expect(parse_error_contains(
-            "tests/scenes/imagemap_duplicate_filter.pbrt",
+            "test/scenes/imagemap_duplicate_filter.pbrt",
             {"imagemap_duplicate_filter.pbrt", "duplicate texture parameter", "string filter"}));
     };
 
     "reject_nonfinite_imagemap_scale"_test = []
     {
         expect(parse_error_contains(
-            "tests/scenes/imagemap_nonfinite_scale.pbrt",
+            "test/scenes/imagemap_nonfinite_scale.pbrt",
             {"imagemap_nonfinite_scale.pbrt", "imagemap texture scale", "finite"}));
     };
 
@@ -278,7 +278,7 @@ static auto test_pbrt_parse_registration = []
         auto rejected = false;
         try
         {
-            (void)PbrtParser::parse("tests/scenes/imagemap_missing_filename.pbrt");
+            (void)PbrtParser::parse("test/scenes/imagemap_missing_filename.pbrt");
         }
         catch (const std::runtime_error& error)
         {
@@ -294,7 +294,7 @@ static auto test_pbrt_parse_registration = []
         auto rejected = false;
         try
         {
-            (void)PbrtParser::parse("tests/scenes/material_reflectance_conflict.pbrt");
+            (void)PbrtParser::parse("test/scenes/material_reflectance_conflict.pbrt");
         }
         catch (const std::runtime_error& error)
         {
@@ -307,7 +307,7 @@ static auto test_pbrt_parse_registration = []
 
     "parse_sphere_parameters"_test = []
     {
-        auto scene = PbrtParser::parse("tests/scenes/sphere_parameters.pbrt");
+        auto scene = PbrtParser::parse("test/scenes/sphere_parameters.pbrt");
         expect(scene.shapes.size() == 2u);
         expect(scene.shapes[0u].type == ShapeDesc::Type::Sphere);
         expect(is_near(scene.shapes[0u].radius, 2.5f));
@@ -319,7 +319,7 @@ static auto test_pbrt_parse_registration = []
 
     "parse_shape_alpha_for_all_shape_types"_test = []
     {
-        auto scene = PbrtParser::parse("tests/scenes/shape_alpha.pbrt");
+        auto scene = PbrtParser::parse("test/scenes/shape_alpha.pbrt");
         expect(scene.shapes.size() == 6u);
         if (scene.shapes.size() != 6u)
         {
@@ -339,19 +339,19 @@ static auto test_pbrt_parse_registration = []
     "reject_invalid_shape_alpha_declarations"_test = []
     {
         expect(parse_error_contains(
-            "tests/scenes/shape_alpha_conflict.pbrt",
+            "test/scenes/shape_alpha_conflict.pbrt",
             {"shape_alpha_conflict.pbrt", "alpha", "more than once"}));
         expect(parse_error_contains(
-            "tests/scenes/shape_alpha_duplicate.pbrt",
+            "test/scenes/shape_alpha_duplicate.pbrt",
             {"shape_alpha_duplicate.pbrt", "alpha", "more than once"}));
         expect(parse_error_contains(
-            "tests/scenes/shape_alpha_nonfinite.pbrt",
+            "test/scenes/shape_alpha_nonfinite.pbrt",
             {"shape_alpha_nonfinite.pbrt", "alpha", "finite"}));
     };
 
     "parse_trianglemesh_without_normals"_test = []
     {
-        auto scene = PbrtParser::parse("tests/scenes/trianglemesh_without_normals.pbrt");
+        auto scene = PbrtParser::parse("test/scenes/trianglemesh_without_normals.pbrt");
         expect(scene.meshes.size() == 1u);
         expect(scene.meshes[0u].positions.size() == 4u);
         expect(scene.meshes[0u].normals.empty());
@@ -362,13 +362,13 @@ static auto test_pbrt_parse_registration = []
     "reject_trianglemesh_normal_count_mismatch"_test = []
     {
         expect(parse_error_contains(
-            "tests/scenes/trianglemesh_normal_count_mismatch.pbrt",
+            "test/scenes/trianglemesh_normal_count_mismatch.pbrt",
             {"trianglemesh_normal_count_mismatch.pbrt", "normal N", "count", "point3 P"}));
     };
 
     "parse_coated_diffuse_materials"_test = []
     {
-        auto scene = PbrtParser::parse("tests/scenes/coated_diffuse_materials.pbrt");
+        auto scene = PbrtParser::parse("test/scenes/coated_diffuse_materials.pbrt");
         expect(scene.materials.size() == 1u);
         expect(scene.named_materials.size() == 1u);
 
@@ -393,7 +393,7 @@ static auto test_pbrt_parse_registration = []
 
     "parse_homogeneous_medium_and_interfaces"_test = []
     {
-        auto scene = PbrtParser::parse("tests/scenes/homogeneous_medium.pbrt");
+        auto scene = PbrtParser::parse("test/scenes/homogeneous_medium.pbrt");
         expect(scene.integrator.type == IntegratorDesc::Type::VolPath);
         expect(scene.named_media.size() == 1u);
         auto&& medium = scene.named_media.at("fog");
@@ -413,18 +413,18 @@ static auto test_pbrt_parse_registration = []
 
     "reject_invalid_homogeneous_media"_test = []
     {
-        expect(parse_error_contains("tests/scenes/homogeneous_medium_duplicate.pbrt", {"homogeneous_medium_duplicate.pbrt", "redefined"}));
-        expect(parse_error_contains("tests/scenes/homogeneous_medium_negative.pbrt", {"homogeneous_medium_negative.pbrt", "sigma_a", "non-negative"}));
-        expect(parse_error_contains("tests/scenes/homogeneous_medium_bad_g.pbrt", {"homogeneous_medium_bad_g.pbrt", "abs(g) < 1"}));
+        expect(parse_error_contains("test/scenes/homogeneous_medium_duplicate.pbrt", {"homogeneous_medium_duplicate.pbrt", "redefined"}));
+        expect(parse_error_contains("test/scenes/homogeneous_medium_negative.pbrt", {"homogeneous_medium_negative.pbrt", "sigma_a", "non-negative"}));
+        expect(parse_error_contains("test/scenes/homogeneous_medium_bad_g.pbrt", {"homogeneous_medium_bad_g.pbrt", "abs(g) < 1"}));
     };
 
     "reject_invalid_sphere_parameters"_test = []
     {
         for (auto path : {
-                 "tests/scenes/sphere_duplicate_radius.pbrt",
-                 "tests/scenes/sphere_invalid_radius.pbrt",
-                 "tests/scenes/sphere_invalid_subdivision.pbrt",
-                 "tests/scenes/sphere_clipped.pbrt",
+                 "test/scenes/sphere_duplicate_radius.pbrt",
+                 "test/scenes/sphere_invalid_radius.pbrt",
+                 "test/scenes/sphere_invalid_subdivision.pbrt",
+                 "test/scenes/sphere_clipped.pbrt",
              })
         {
             auto rejected = false;
@@ -443,9 +443,9 @@ static auto test_pbrt_parse_registration = []
     "reject_invalid_ply_filenames"_test = []
     {
         for (auto path : {
-                 "tests/scenes/ply_missing_filename.pbrt",
-                 "tests/scenes/ply_empty_filename.pbrt",
-                 "tests/scenes/ply_duplicate_filename.pbrt",
+                 "test/scenes/ply_missing_filename.pbrt",
+                 "test/scenes/ply_empty_filename.pbrt",
+                 "test/scenes/ply_duplicate_filename.pbrt",
              })
         {
             auto rejected = false;
@@ -464,7 +464,7 @@ static auto test_pbrt_parse_registration = []
 
     "parse_distant_light"_test = []
     {
-        auto scene = PbrtParser::parse("tests/scenes/distant_basic.pbrt");
+        auto scene = PbrtParser::parse("test/scenes/distant_basic.pbrt");
         expect(scene.distant_lights.size() == 1u);
         expect(scene.infinite_lights.empty());
         if (scene.distant_lights.empty())
@@ -485,11 +485,11 @@ static auto test_pbrt_parse_registration = []
     "reject_invalid_distant_lights"_test = []
     {
         for (auto path : {
-                 "tests/scenes/distant_invalid_direction.pbrt",
-                 "tests/scenes/distant_invalid_scale.pbrt",
-                 "tests/scenes/distant_invalid_radiance.pbrt",
-                 "tests/scenes/distant_nonfinite_illuminance.pbrt",
-                 "tests/scenes/distant_duplicate_parameter.pbrt",
+                 "test/scenes/distant_invalid_direction.pbrt",
+                 "test/scenes/distant_invalid_scale.pbrt",
+                 "test/scenes/distant_invalid_radiance.pbrt",
+                 "test/scenes/distant_nonfinite_illuminance.pbrt",
+                 "test/scenes/distant_duplicate_parameter.pbrt",
              })
         {
             expect(parse_error_contains(path, {path, "LightSource"}));
@@ -498,7 +498,7 @@ static auto test_pbrt_parse_registration = []
 
     "parse_uniform_infinite_light"_test = []
     {
-        auto scene = PbrtParser::parse("tests/scenes/infinite_uniform.pbrt");
+        auto scene = PbrtParser::parse("test/scenes/infinite_uniform.pbrt");
         expect(scene.infinite_lights.size() == 1u);
         expect(scene.distant_lights.empty());
         if (scene.infinite_lights.empty())
@@ -521,7 +521,7 @@ static auto test_pbrt_parse_registration = []
             expect(is_near(*light.illuminance, 0.05f));
         }
 
-        auto defaults = PbrtParser::parse("tests/scenes/infinite_missing_filename.pbrt");
+        auto defaults = PbrtParser::parse("test/scenes/infinite_missing_filename.pbrt");
         expect(defaults.infinite_lights.size() == 1u);
         if (!defaults.infinite_lights.empty())
         {
@@ -535,7 +535,7 @@ static auto test_pbrt_parse_registration = []
 
     "parse_multiple_environment_lights"_test = []
     {
-        auto scene = PbrtParser::parse("tests/scenes/multiple_environment_lights.pbrt");
+        auto scene = PbrtParser::parse("test/scenes/multiple_environment_lights.pbrt");
         expect(scene.infinite_lights.size() == 1u);
         expect(scene.distant_lights.size() == 2u);
         if (scene.distant_lights.size() == 2u)
@@ -552,14 +552,14 @@ static auto test_pbrt_parse_registration = []
     "reject_invalid_infinite_lights"_test = []
     {
         for (auto path : {
-                 "tests/scenes/infinite_invalid_scale.pbrt",
-                 "tests/scenes/infinite_invalid_radiance.pbrt",
-                 "tests/scenes/infinite_nonfinite_illuminance.pbrt",
-                 "tests/scenes/infinite_image_illuminance.pbrt",
-                 "tests/scenes/infinite_l_and_filename.pbrt",
-                 "tests/scenes/infinite_duplicate_parameter.pbrt",
-                 "tests/scenes/infinite_unknown_type.pbrt",
-                 "tests/scenes/infinite_unsupported_parameter.pbrt",
+                 "test/scenes/infinite_invalid_scale.pbrt",
+                 "test/scenes/infinite_invalid_radiance.pbrt",
+                 "test/scenes/infinite_nonfinite_illuminance.pbrt",
+                 "test/scenes/infinite_image_illuminance.pbrt",
+                 "test/scenes/infinite_l_and_filename.pbrt",
+                 "test/scenes/infinite_duplicate_parameter.pbrt",
+                 "test/scenes/infinite_unknown_type.pbrt",
+                 "test/scenes/infinite_unsupported_parameter.pbrt",
              })
         {
             expect(parse_error_contains(path, {path, "LightSource"}));
