@@ -294,16 +294,6 @@ class MainWindow(QMainWindow):
         except (ValueError, OSError) as error:
             QMessageBox.warning(self, "Invalid Render Settings", str(error))
             return
-        if options.output.exists():
-            answer = QMessageBox.question(
-                self,
-                "Overwrite Output",
-                f"The output file already exists:\n{options.output}\n\nOverwrite it?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            if answer != QMessageBox.Yes:
-                return
         self.log_edit.clear()
         self.controller.start(options, self.project_root)
 
