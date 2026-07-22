@@ -58,9 +58,23 @@ luisa::optional<luisa::string> validate_camera_to_world(const float4x4& camera_t
     return luisa::nullopt;
 }
 
-Camera::Camera(float4x4 camera_to_world, float2 shutter_span,
+luisa::optional<luisa::string> validate_camera_world_up(float3 world_up) noexcept
+{
+    if (!std::isfinite(world_up.x) || !std::isfinite(world_up.y) || !std::isfinite(world_up.z))
+    {
+        return luisa::string{"Camera world-up vector must be finite."};
+    }
+    if (dot(world_up, world_up) < 1e-12f)
+    {
+        return luisa::string{"Camera world-up vector must be non-zero."};
+    }
+    return luisa::nullopt;
+}
+
+Camera::Camera(float4x4 camera_to_world, float3 world_up, float2 shutter_span,
                uint shutter_samples_count) noexcept
     : m_initial_camera_to_world{camera_to_world},
+      m_world_up{normalize(world_up)},
       m_shutter_span{shutter_span},
       m_shutter_samples_count{shutter_samples_count}
 {

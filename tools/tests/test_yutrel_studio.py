@@ -16,6 +16,7 @@ from yutrel_studio.model import (
     build_command,
     find_project_root,
     read_pbrt_resolution,
+    read_scene_resolution,
     validate_render_options,
 )
 from yutrel_studio.process import RenderProcessController
@@ -97,12 +98,28 @@ def test_validation_rejects_invalid_values(
 
 
 def test_validation_rejects_missing_scene_and_output_directory(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="existing PBRT"):
+    with pytest.raises(ValueError, match="existing PBRT or USD"):
         validate_render_options(make_options(tmp_path, scene=tmp_path / "missing.pbrt"))
     with pytest.raises(ValueError, match="output directory"):
         validate_render_options(
             make_options(tmp_path, output=tmp_path / "missing" / "render.exr")
         )
+
+
+@pytest.mark.parametrize("extension", [".usd", ".usda", ".usdc", ".usdz", ".USD"])
+def test_validation_accepts_usd_scene_extensions(
+    tmp_path: Path, extension: str
+) -> None:
+    scene = tmp_path / f"scene{extension}"
+    scene.write_bytes(b"usd")
+    validate_render_options(make_options(tmp_path, scene=scene))
+
+
+def test_validation_rejects_unsupported_scene_extension(tmp_path: Path) -> None:
+    scene = tmp_path / "scene.gltf"
+    scene.write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="PBRT or USD extension"):
+        validate_render_options(make_options(tmp_path, scene=scene))
 
 
 def test_find_project_root() -> None:
@@ -134,6 +151,12 @@ def test_pbrt_resolution_uses_default_for_missing_values(tmp_path: Path) -> None
     )
     assert read_pbrt_resolution(scene) == (DEFAULT_RESOLUTION[0], 900)
     assert read_pbrt_resolution(tmp_path / "missing.pbrt") == DEFAULT_RESOLUTION
+
+
+def test_usd_resolution_uses_default(tmp_path: Path) -> None:
+    scene = tmp_path / "scene.usdc"
+    scene.write_bytes(b"PXR-USDC")
+    assert read_scene_resolution(scene) == DEFAULT_RESOLUTION
 
 
 def test_window_defaults_and_running_state(qtbot, tmp_path: Path) -> None:
@@ -169,6 +192,23 @@ def test_window_defaults_and_running_state(qtbot, tmp_path: Path) -> None:
     assert window.scene_edit.isEnabled()
     assert not window.stop_button.isEnabled()
     assert window.status_label.text() == RenderState.SUCCEEDED.value
+
+
+def test_window_accepts_usd_scene(qtbot, tmp_path: Path) -> None:
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.IniFormat)
+    window = MainWindow(project_root=tmp_path, settings=settings)
+    qtbot.addWidget(window)
+
+    scene = tmp_path / "scene.usdc"
+    scene.write_bytes(b"PXR-USDC")
+    window.scene_edit.setText(str(scene))
+    window.output_edit.setText(str(tmp_path / "scene.exr"))
+    window._inherit_scene_resolution()
+
+    assert window.width_edit.text() == "1920"
+    assert window.height_edit.text() == "1080"
+    assert window.render_button.isEnabled()
+    assert str(scene) in window.command_edit.text()
 
 
 def test_window_restores_settings(qtbot, tmp_path: Path) -> None:

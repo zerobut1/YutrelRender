@@ -102,6 +102,32 @@ static auto test_pbrt_import_registration = []
         expect(scene->film()->filename() == output);
     };
 
+    "import_camera_world_up_and_override"_test = []
+    {
+        auto source_spec     = PbrtImporter::import("test/scenes/camera_world_up.pbrt");
+        auto&& source_camera = static_cast<const PinholeCameraSpec&>(
+            source_spec.cameras().spec(source_spec.render().camera));
+        expect(is_near(source_camera.world_up().x, 0.0f));
+        expect(is_near(source_camera.world_up().y, 1.0f));
+        expect(is_near(source_camera.world_up().z, 0.0f));
+
+        auto override_spec = PbrtImporter::import(
+            "test/scenes/camera_world_up.pbrt",
+            PbrtImportOptions{.world_up = make_float3(1.0f, 0.0f, 0.0f)});
+        auto&& override_camera = static_cast<const PinholeCameraSpec&>(
+            override_spec.cameras().spec(override_spec.render().camera));
+        expect(is_near(override_camera.world_up().x, 1.0f));
+        expect(is_near(override_camera.world_up().y, 0.0f));
+        expect(is_near(override_camera.world_up().z, 0.0f));
+
+        auto fallback_spec     = PbrtImporter::import("test/scenes/import_geometry.pbrt");
+        auto&& fallback_camera = static_cast<const PinholeCameraSpec&>(
+            fallback_spec.cameras().spec(fallback_spec.render().camera));
+        expect(is_near(fallback_camera.world_up().x, 0.0f));
+        expect(is_near(fallback_camera.world_up().y, 1.0f));
+        expect(is_near(fallback_camera.world_up().z, 0.0f));
+    };
+
     "validate_rgb_film_spec"_test = []
     {
         expect(!RGBFilmSpec{make_uint2(16u), false, "render.exr"}.validate().has_value());
@@ -152,30 +178,90 @@ static auto test_pbrt_import_registration = []
             float4x4 expected_camera_to_world;
         };
         constexpr Matrix4 identity{
-            1.0f, 0.0f, 0.0f, 0.0f,
-            0.0f, 1.0f, 0.0f, 0.0f,
-            0.0f, 0.0f, 1.0f, 0.0f,
-            0.0f, 0.0f, 0.0f, 1.0f};
+            1.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            1.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            1.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            1.0f};
         constexpr Matrix4 look_at_negative_z{
-            1.0f, 0.0f, 0.0f, 0.0f,
-            0.0f, 1.0f, 0.0f, 0.0f,
-            0.0f, 0.0f, -1.0f, 0.0f,
-            0.0f, 0.0f, 0.0f, 1.0f};
+            1.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            1.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            -1.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            1.0f};
         constexpr Matrix4 single_negative_scale{
-            -1.0f, 0.0f, 0.0f, 0.0f,
-            0.0f, 1.0f, 0.0f, 0.0f,
-            0.0f, 0.0f, 1.0f, 0.0f,
-            0.0f, 0.0f, 0.0f, 1.0f};
+            -1.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            1.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            1.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            1.0f};
         constexpr Matrix4 double_negative_scale{
-            -1.0f, 0.0f, 0.0f, 0.0f,
-            0.0f, -1.0f, 0.0f, 0.0f,
-            0.0f, 0.0f, 1.0f, 0.0f,
-            0.0f, 0.0f, 0.0f, 1.0f};
+            -1.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            -1.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            1.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            1.0f};
         constexpr Matrix4 affine_inverse{
-            0.5f, -1.0f / 6.0f, 1.0f / 24.0f, -17.0f / 12.0f,
-            0.0f, 1.0f / 3.0f, -1.0f / 12.0f, -7.0f / 6.0f,
-            0.0f, 0.0f, 0.25f, -1.5f,
-            0.0f, 0.0f, 0.0f, 1.0f};
+            0.5f,
+            -1.0f / 6.0f,
+            1.0f / 24.0f,
+            -17.0f / 12.0f,
+            0.0f,
+            1.0f / 3.0f,
+            -1.0f / 12.0f,
+            -7.0f / 6.0f,
+            0.0f,
+            0.0f,
+            0.25f,
+            -1.5f,
+            0.0f,
+            0.0f,
+            0.0f,
+            1.0f};
         std::array cases{
             Case{
                 identity,
@@ -228,18 +314,16 @@ static auto test_pbrt_import_registration = []
 
     "import_camera_converts_pbrt_short_axis_fov_to_vertical"_test = []
     {
-        auto parsed             = PbrtParser::parse("test/scenes/import_geometry.pbrt");
-        parsed.camera.fov       = 30.0f;
-        parsed.film.resolution  = make_uint2(1280u, 1800u);
-        auto portrait_spec      = PbrtImporter::import(parsed);
-        auto portrait_camera    = dynamic_cast<const PinholeCameraSpec*>(
+        auto parsed            = PbrtParser::parse("test/scenes/import_geometry.pbrt");
+        parsed.camera.fov      = 30.0f;
+        parsed.film.resolution = make_uint2(1280u, 1800u);
+        auto portrait_spec     = PbrtImporter::import(parsed);
+        auto portrait_camera   = dynamic_cast<const PinholeCameraSpec*>(
             &portrait_spec.cameras().spec(portrait_spec.render().camera));
         expect(portrait_camera != nullptr);
         if (portrait_camera != nullptr)
         {
-            auto expected = 2.0f * std::atan(
-                std::tan(0.5f * 30.0f * 0.01745329251994329577f) *
-                (1800.0f / 1280.0f)) *
+            auto expected = 2.0f * std::atan(std::tan(0.5f * 30.0f * 0.01745329251994329577f) * (1800.0f / 1280.0f)) *
                             57.295779513082320876f;
             expect(is_near(portrait_camera->fov(), expected));
         }
@@ -257,8 +341,8 @@ static auto test_pbrt_import_registration = []
 
     "reject_invalid_camera_transform_with_source"_test = []
     {
-        auto singular = identity_matrix4;
-        singular[0u]  = 0.0f;
+        auto singular   = identity_matrix4;
+        singular[0u]    = 0.0f;
         auto non_finite = identity_matrix4;
         non_finite[5u]  = std::numeric_limits<float>::infinity();
         auto non_affine = identity_matrix4;
@@ -286,8 +370,8 @@ static auto test_pbrt_import_registration = []
             catch (const std::runtime_error& error)
             {
                 auto message = std::string{error.what()};
-                rejected = message.find("bad-camera.pbrt:77:3") != std::string::npos &&
-                           message.find(test_case.expected) != std::string::npos;
+                rejected     = message.find("bad-camera.pbrt:77:3") != std::string::npos &&
+                               message.find(test_case.expected) != std::string::npos;
             }
             expect(rejected);
         }
@@ -411,11 +495,11 @@ static auto test_pbrt_import_registration = []
         expect(is_near(defaults.camera.fov, 90.0f));
         expect(is_near(defaults.materials.front().reflectance.x, 0.5f));
 
-        auto volpath_spec               = PbrtImporter::import(defaults);
-        auto&& volpath                  = static_cast<const VolPathIntegratorSpec&>(
+        auto volpath_spec = PbrtImporter::import(defaults);
+        auto&& volpath    = static_cast<const VolPathIntegratorSpec&>(
             volpath_spec.integrators().spec(volpath_spec.render().integrator));
         expect(!volpath.validate().has_value());
-        auto&& default_sampler          = static_cast<const ZSobolSamplerSpec&>(
+        auto&& default_sampler = static_cast<const ZSobolSamplerSpec&>(
             volpath_spec.samplers().spec(volpath_spec.render().sampler));
         expect(default_sampler.spp() == 16u);
         expect(default_sampler.seed() == 20120712u);
@@ -432,7 +516,7 @@ static auto test_pbrt_import_registration = []
         gaussian.sampler.type          = SamplerDesc::Type::Independent;
         gaussian.sampler.pixel_samples = 4u;
         auto gaussian_spec             = PbrtImporter::import(std::move(gaussian));
-        auto&& gaussian_filter          = static_cast<const GaussianFilterSpec&>(
+        auto&& gaussian_filter         = static_cast<const GaussianFilterSpec&>(
             gaussian_spec.filters().spec(gaussian_spec.render().filter));
         expect(!gaussian_filter.validate().has_value());
     };
@@ -860,8 +944,8 @@ static auto test_pbrt_import_registration = []
 
     "import_shape_alpha_as_cached_opacity_surfaces"_test = []
     {
-        auto parsed = PbrtParser::parse("test/scenes/shape_alpha.pbrt");
-        auto spec   = PbrtImporter::import(std::move(parsed));
+        auto parsed    = PbrtParser::parse("test/scenes/shape_alpha.pbrt");
+        auto spec      = PbrtImporter::import(std::move(parsed));
         auto instances = spec.instances();
         expect(instances.size() == 6u);
         if (instances.size() != 6u)
@@ -900,7 +984,7 @@ static auto test_pbrt_import_registration = []
         auto nonfinite = PbrtParser::parse("test/scenes/shape_alpha.pbrt");
         nonfinite.shapes[0u].alpha_texture.reset();
         nonfinite.shapes[0u].alpha = std::numeric_limits<float>::quiet_NaN();
-        auto nonfinite_rejected = false;
+        auto nonfinite_rejected    = false;
         try
         {
             (void)PbrtImporter::import(std::move(nonfinite));
@@ -920,7 +1004,7 @@ static auto test_pbrt_import_registration = []
         }
         catch (const std::runtime_error& error)
         {
-            auto message = std::string{error.what()};
+            auto message       = std::string{error.what()};
             undefined_rejected = message.find("missing-alpha") != std::string::npos &&
                                  message.find("undefined texture") != std::string::npos;
         }
@@ -935,7 +1019,7 @@ static auto test_pbrt_import_registration = []
         }
         catch (const std::runtime_error& error)
         {
-            auto message = std::string{error.what()};
+            auto message      = std::string{error.what()};
             spectrum_rejected = message.find("spectrum-mask") != std::string::npos &&
                                 message.find("float texture") != std::string::npos;
         }
@@ -1242,8 +1326,8 @@ static auto test_pbrt_import_registration = []
                    .validate()
                    .has_value());
 
-        auto default_parsed = PbrtParser::parse("test/scenes/infinite_missing_filename.pbrt");
-        auto default_spec   = PbrtImporter::import(std::move(default_parsed));
+        auto default_parsed      = PbrtParser::parse("test/scenes/infinite_missing_filename.pbrt");
+        auto default_spec        = PbrtImporter::import(std::move(default_parsed));
         auto default_environment = dynamic_cast<const UniformEnvironmentSpec*>(
             &default_spec.environments().spec(default_spec.render().environment));
         expect(default_environment != nullptr);
@@ -1303,8 +1387,8 @@ static auto test_pbrt_import_registration = []
 
     "import_multiple_environment_lights"_test = []
     {
-        auto parsed = PbrtParser::parse("test/scenes/multiple_environment_lights.pbrt");
-        auto spec   = PbrtImporter::import(std::move(parsed));
+        auto parsed  = PbrtParser::parse("test/scenes/multiple_environment_lights.pbrt");
+        auto spec    = PbrtImporter::import(std::move(parsed));
         auto grouped = dynamic_cast<const GroupedEnvironmentSpec*>(
             &spec.environments().spec(spec.render().environment));
         expect(grouped != nullptr);

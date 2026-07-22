@@ -26,6 +26,7 @@
 #include <pxr/usd/usdGeom/gprim.h>
 #include <pxr/usd/usdGeom/imageable.h>
 #include <pxr/usd/usdGeom/mesh.h>
+#include <pxr/usd/usdGeom/metrics.h>
 #include <pxr/usd/usdGeom/pointInstancer.h>
 #include <pxr/usd/usdGeom/primvar.h>
 #include <pxr/usd/usdGeom/primvarsAPI.h>
@@ -477,6 +478,7 @@ private:
     luisa::optional<SurfaceRef> _default_surface;
     luisa::optional<SurfaceRef> _light_surface;
     luisa::optional<CameraRef> _camera;
+    luisa::float3 _world_up{0.0f, 1.0f, 0.0f};
 
 public:
     ImportContext(std::filesystem::path scene_path, UsdStageRefPtr stage) noexcept
@@ -484,6 +486,15 @@ public:
 
     [[nodiscard]] SceneSpec import(UsdImportOptions options)
     {
+        auto up_axis = UsdGeomGetStageUpAxis(_stage);
+        _world_up    = up_axis == UsdGeomTokens->z
+                           ? luisa::make_float3(0.0f, 0.0f, 1.0f)
+                           : luisa::make_float3(0.0f, 1.0f, 0.0f);
+        if (options.world_up)
+        {
+            _world_up = *options.world_up;
+        }
+
         for (auto&& prim : _stage->Traverse())
         {
             if (!is_renderable(prim))
@@ -969,6 +980,7 @@ private:
         _camera  = _builder.add_camera<PinholeCameraSpec>(
             spec_meta(_scene_path, prim.GetPath().GetString()),
             to_luisa_matrix(_xform_cache.GetLocalToWorldTransform(prim)),
+            _world_up,
             luisa::make_float2(0.0f),
             0u,
             fov);

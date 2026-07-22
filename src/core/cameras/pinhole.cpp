@@ -6,9 +6,9 @@
 
 namespace Yutrel
 {
-PinholeCamera::PinholeCamera(float4x4 camera_to_world, float2 shutter_span,
+PinholeCamera::PinholeCamera(float4x4 camera_to_world, float3 world_up, float2 shutter_span,
                              uint shutter_samples_count, float fov) noexcept
-    : Camera{camera_to_world, shutter_span, shutter_samples_count},
+    : Camera{camera_to_world, world_up, shutter_span, shutter_samples_count},
       m_fov{radians(fov)}
 {
 }
@@ -33,6 +33,7 @@ const Camera* PinholeCameraSpec::build(SceneBuilder& builder) const noexcept
 {
     return builder.emplace<Camera, PinholeCamera>(
         _camera_to_world,
+        _world_up,
         _shutter_span,
         _shutter_samples_count,
         _fov);

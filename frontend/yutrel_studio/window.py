@@ -33,7 +33,7 @@ from .model import (
     build_command,
     find_project_root,
     format_command,
-    read_pbrt_resolution,
+    read_scene_resolution,
     validate_render_options,
 )
 from .process import RenderProcessController
@@ -76,7 +76,7 @@ class MainWindow(QMainWindow):
         scene_layout.setContentsMargins(0, 0, 0, 0)
         scene_layout.addWidget(self.scene_edit)
         scene_layout.addWidget(self.scene_button)
-        settings_layout.addRow("PBRT scene", scene_row)
+        settings_layout.addRow("Scene", scene_row)
 
         self.output_edit = QLineEdit()
         self.output_button = QPushButton("Browse...")
@@ -127,7 +127,7 @@ class MainWindow(QMainWindow):
 
         self.command_edit = QLineEdit()
         self.command_edit.setReadOnly(True)
-        self.command_edit.setPlaceholderText("Select a valid PBRT scene.")
+        self.command_edit.setPlaceholderText("Select a valid PBRT or USD scene.")
         settings_layout.addRow("Command", self.command_edit)
 
         self.validation_label = QLabel()
@@ -217,7 +217,7 @@ class MainWindow(QMainWindow):
         scene_text = self.scene_edit.text().strip()
         output_text = self.output_edit.text().strip()
         if not scene_text:
-            raise ValueError("Select a PBRT scene.")
+            raise ValueError("Select a PBRT or USD scene.")
         if not output_text:
             raise ValueError("Select an EXR output path.")
         options = RenderOptions(
@@ -252,9 +252,12 @@ class MainWindow(QMainWindow):
             initial = str(self.project_root / "scene")
         filename, _ = QFileDialog.getOpenFileName(
             self,
-            "Select PBRT Scene",
+            "Select Scene",
             initial,
-            "PBRT Scenes (*.pbrt);;All Files (*)",
+            "Scene Files (*.pbrt *.usd *.usda *.usdc *.usdz);;"
+            "PBRT Scenes (*.pbrt);;"
+            "USD Scenes (*.usd *.usda *.usdc *.usdz);;"
+            "All Files (*)",
         )
         if filename:
             scene = Path(filename).resolve()
@@ -266,7 +269,7 @@ class MainWindow(QMainWindow):
         scene_text = self.scene_edit.text().strip()
         resolution = DEFAULT_RESOLUTION
         if scene_text:
-            resolution = read_pbrt_resolution(self._resolve_path(scene_text))
+            resolution = read_scene_resolution(self._resolve_path(scene_text))
         self.width_edit.setText(str(resolution[0]))
         self.height_edit.setText(str(resolution[1]))
 

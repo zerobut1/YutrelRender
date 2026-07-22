@@ -867,12 +867,13 @@ private:
 
     void parse_look_at(const Token& command)
     {
-        auto eye       = next_float3(command, "LookAt");
-        auto target    = next_float3(command, "LookAt");
-        auto up        = normalize_host(next_float3(command, "LookAt"), command, "LookAt up vector");
-        auto direction = normalize_host(target - eye, command, "LookAt direction");
-        auto right     = normalize_host(cross_host(up, direction), command, "LookAt right vector");
-        auto new_up    = cross_host(direction, right);
+        auto eye               = next_float3(command, "LookAt");
+        auto target            = next_float3(command, "LookAt");
+        auto up                = normalize_host(next_float3(command, "LookAt"), command, "LookAt up vector");
+        m_desc.camera.world_up = up;
+        auto direction         = normalize_host(target - eye, command, "LookAt direction");
+        auto right             = normalize_host(cross_host(up, direction), command, "LookAt right vector");
+        auto new_up            = cross_host(direction, right);
         Matrix4 camera_from_world{identity_matrix4};
         matrix_at(camera_from_world, 0u, 0u) = right.x;
         matrix_at(camera_from_world, 0u, 1u) = right.y;
@@ -969,10 +970,10 @@ private:
         {
             fail(command, luisa::format("unsupported PixelFilter '{}'", type));
         }
-        auto params              = parse_parameters();
-        auto default_radius      = m_desc.filter.type == FilterDesc::Type::Triangle ? 2.0f : 1.5f;
-        m_desc.filter.radius     = make_float2(one_float(params, "xradius", command, default_radius),
-                                               one_float(params, "yradius", command, default_radius));
+        auto params          = parse_parameters();
+        auto default_radius  = m_desc.filter.type == FilterDesc::Type::Triangle ? 2.0f : 1.5f;
+        m_desc.filter.radius = make_float2(one_float(params, "xradius", command, default_radius),
+                                           one_float(params, "yradius", command, default_radius));
         if (m_desc.filter.type == FilterDesc::Type::Gaussian)
         {
             m_desc.filter.sigma = one_float(params, "sigma", command, 0.5f);
@@ -1546,8 +1547,8 @@ private:
                     }
                 }
             }
-            auto L      = one_float3(params, "rgb", "L", make_float3(1.0f));
-            auto scale  = one_float(params, "scale", command, 1.0f);
+            auto L     = one_float3(params, "rgb", "L", make_float3(1.0f));
+            auto scale = one_float(params, "scale", command, 1.0f);
             luisa::optional<float> illuminance;
             if (find_param(params, "float", "illuminance") != nullptr)
             {

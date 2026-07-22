@@ -18,6 +18,7 @@ struct PbrtImportOptions
     luisa::optional<luisa::uint> seed;
     luisa::optional<luisa::uint2> resolution;
     luisa::optional<std::filesystem::path> output;
+    luisa::optional<luisa::float3> world_up;
 };
 
 class PbrtImporter

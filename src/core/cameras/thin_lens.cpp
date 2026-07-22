@@ -7,10 +7,10 @@
 
 namespace Yutrel
 {
-ThinLensCamera::ThinLensCamera(float4x4 camera_to_world, float2 shutter_span,
+ThinLensCamera::ThinLensCamera(float4x4 camera_to_world, float3 world_up, float2 shutter_span,
                                uint shutter_samples_count, float aperture,
                                float focal_length, float focus_distance) noexcept
-    : Camera{camera_to_world, shutter_span, shutter_samples_count},
+    : Camera{camera_to_world, world_up, shutter_span, shutter_samples_count},
       m_aperture{aperture},
       m_focal_length{focal_length},
       m_focus_distance{focus_distance}
@@ -57,6 +57,7 @@ const Camera* ThinLensCameraSpec::build(SceneBuilder& builder) const noexcept
 {
     return builder.emplace<Camera, ThinLensCamera>(
         _camera_to_world,
+        _world_up,
         _shutter_span,
         _shutter_samples_count,
         _aperture,

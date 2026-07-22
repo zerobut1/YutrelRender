@@ -8,13 +8,12 @@
 namespace Yutrel
 {
 
-FpsCameraController::FpsCameraController(const float4x4& camera_to_world, Config config) noexcept
-    : m_world_up(normalize(make_float3(camera_to_world[1]))), m_config(config)
+FpsCameraController::FpsCameraController(const float4x4& camera_to_world, float3 world_up, Config config) noexcept
+    : m_world_up(normalize(world_up)), m_config(config)
 {
     m_orientation_sign = camera_linear_determinant(camera_to_world) < 0.0f ? -1.0f : 1.0f;
 
     auto c0 = camera_to_world[0];
-    auto c1 = camera_to_world[1];
     auto c2 = camera_to_world[2];
     auto c3 = camera_to_world[3];
 
@@ -72,96 +71,102 @@ bool FpsCameraController::update() noexcept
         dt = 1.0f / 60.0f;
     }
 
-    bool changed = false;
-
-    // Mouse look (hold RMB)
-    if (!io.WantCaptureMouse && io.MouseDown[1])
+    Input input;
+    input.mouse_look = !io.WantCaptureMouse && io.MouseDown[1];
+    if (input.mouse_look)
     {
-        auto dx = static_cast<float>(io.MouseDelta.x);
-        auto dy = static_cast<float>(io.MouseDelta.y);
-        if (dx != 0.0f || dy != 0.0f)
-        {
-            auto yaw   = -dx * m_config.mouse_sensitivity * m_orientation_sign;
-            auto pitch = -dy * m_config.mouse_sensitivity * m_orientation_sign;
-
-            auto forward = rotate_axis_angle(m_forward, m_world_up, yaw);
-            auto right   = m_orientation_sign * cross(forward, m_world_up);
-            if (length(right) > 1e-6f)
-            {
-                right   = normalize(right);
-                forward = rotate_axis_angle(forward, right, pitch);
-            }
-
-            // Clamp pitch relative to world_up
-            auto d             = dot(normalize(forward), m_world_up);
-            d                  = clamp(d, -1.0f, 1.0f);
-            auto pitch_angle   = std::asin(d);
-            auto clamped_pitch = clamp(pitch_angle, -m_config.max_pitch_radians, m_config.max_pitch_radians);
-            if (clamped_pitch != pitch_angle)
-            {
-                // Project onto plane and rebuild with clamped pitch.
-                auto planar = forward - m_world_up * dot(forward, m_world_up);
-                if (length(planar) > 1e-6f)
-                {
-                    planar  = normalize(planar);
-                    forward = planar * static_cast<float>(std::cos(clamped_pitch)) +
-                              m_world_up * static_cast<float>(std::sin(clamped_pitch));
-                }
-            }
-
-            m_forward = normalize(forward);
-            changed   = true;
-        }
+        input.look_delta = make_float2(
+            static_cast<float>(io.MouseDelta.x),
+            static_cast<float>(io.MouseDelta.y));
     }
 
-    // Keyboard move
     if (!io.WantCaptureKeyboard)
     {
-        float3 move  = make_float3(0.0f);
-        auto forward = m_forward;
-        auto right   = m_orientation_sign * cross(forward, m_world_up);
-        if (length(right) > 1e-6f)
-        {
-            right = normalize(right);
-        }
-        else
-        {
-            right = make_float3(1.0f, 0.0f, 0.0f);
-        }
-
         if (ImGui::IsKeyDown(ImGuiKey_W))
         {
-            move = move + forward;
+            input.movement.y += 1.0f;
         }
         if (ImGui::IsKeyDown(ImGuiKey_S))
         {
-            move = move - forward;
+            input.movement.y -= 1.0f;
         }
         if (ImGui::IsKeyDown(ImGuiKey_D))
         {
-            move = move + right;
+            input.movement.x += 1.0f;
         }
         if (ImGui::IsKeyDown(ImGuiKey_A))
         {
-            move = move - right;
+            input.movement.x -= 1.0f;
         }
         if (ImGui::IsKeyDown(ImGuiKey_E))
         {
-            move = move + m_world_up;
+            input.movement.z += 1.0f;
         }
         if (ImGui::IsKeyDown(ImGuiKey_Q))
         {
-            move = move - m_world_up;
+            input.movement.z -= 1.0f;
+        }
+        input.fast = ImGui::IsKeyDown(ImGuiKey_LeftShift);
+    }
+    return update(input, dt);
+}
+
+bool FpsCameraController::update(const Input& input, float delta_time) noexcept
+{
+    bool changed = false;
+
+    if (input.mouse_look && (input.look_delta.x != 0.0f || input.look_delta.y != 0.0f))
+    {
+        auto yaw   = -input.look_delta.x * m_config.mouse_sensitivity * m_orientation_sign;
+        auto pitch = -input.look_delta.y * m_config.mouse_sensitivity * m_orientation_sign;
+
+        auto forward = rotate_axis_angle(m_forward, m_world_up, yaw);
+        auto right   = m_orientation_sign * cross(forward, m_world_up);
+        if (length(right) > 1e-6f)
+        {
+            right   = normalize(right);
+            forward = rotate_axis_angle(forward, right, pitch);
         }
 
-        auto move_len = length(move);
-        if (move_len > 1e-6f)
+        auto d             = clamp(dot(normalize(forward), m_world_up), -1.0f, 1.0f);
+        auto pitch_angle   = std::asin(d);
+        auto clamped_pitch = clamp(pitch_angle, -m_config.max_pitch_radians, m_config.max_pitch_radians);
+        if (clamped_pitch != pitch_angle)
         {
-            move       = move * (1.0f / move_len);
-            auto speed = ImGui::IsKeyDown(ImGuiKey_LeftShift) ? m_config.fast_move_speed : m_config.move_speed;
-            m_position = m_position + move * (speed * dt);
-            changed    = true;
+            auto planar = forward - m_world_up * dot(forward, m_world_up);
+            if (length(planar) > 1e-6f)
+            {
+                planar  = normalize(planar);
+                forward = planar * static_cast<float>(std::cos(clamped_pitch)) +
+                          m_world_up * static_cast<float>(std::sin(clamped_pitch));
+            }
         }
+
+        m_forward = normalize(forward);
+        changed   = true;
+    }
+
+    auto right = m_orientation_sign * cross(m_forward, m_world_up);
+    if (length(right) > 1e-6f)
+    {
+        right = normalize(right);
+    }
+    else
+    {
+        right = make_float3(1.0f, 0.0f, 0.0f);
+    }
+    auto move = right * input.movement.x +
+                m_forward * input.movement.y +
+                m_world_up * input.movement.z;
+
+    auto move_len = length(move);
+    if (move_len > 1e-6f)
+    {
+        move       = move * (1.0f / move_len);
+        auto speed = input.fast ? m_config.fast_move_speed : m_config.move_speed;
+        auto dt    = delta_time > 0.0f ? delta_time : 1.0f / 60.0f;
+        m_position = m_position + move * (speed * dt);
+        changed    = true;
     }
 
     return changed;
@@ -171,7 +176,7 @@ float4x4 FpsCameraController::camera_to_world() const noexcept
 {
     // Match Camera constructor convention:
     // w = normalize(position - lookat) = -forward
-    auto w = normalize(make_float3(-m_forward.x, -m_forward.y, -m_forward.z));
+    auto w           = normalize(make_float3(-m_forward.x, -m_forward.y, -m_forward.z));
     auto canonical_u = normalize(cross(m_world_up, w));
     auto u           = canonical_u * m_orientation_sign;
     auto v           = cross(w, canonical_u);

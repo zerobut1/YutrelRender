@@ -102,11 +102,28 @@ static auto test_usd_import_registration = []
                 .seed       = 42u,
                 .resolution = luisa::make_uint2(320u, 180u),
                 .output     = std::filesystem::path{"build/usd-test.exr"},
+                .world_up   = luisa::make_float3(1.0f, 0.0f, 0.0f),
             });
         auto&& sampler = static_cast<const ZSobolSamplerSpec&>(
             spec.samplers().spec(spec.render().sampler));
         expect(sampler.spp() == 4u);
         expect(sampler.seed() == 42u);
+        auto&& camera = static_cast<const PinholeCameraSpec&>(
+            spec.cameras().spec(spec.render().camera));
+        expect(is_near(camera.world_up(), luisa::make_float3(1.0f, 0.0f, 0.0f)));
+    };
+
+    "import_stage_up_axis"_test = []
+    {
+        auto y_spec     = UsdImporter::import("test/usd/scenes/camera_y_up.usda");
+        auto&& y_camera = static_cast<const PinholeCameraSpec&>(
+            y_spec.cameras().spec(y_spec.render().camera));
+        expect(is_near(y_camera.world_up(), luisa::make_float3(0.0f, 1.0f, 0.0f)));
+
+        auto z_spec     = UsdImporter::import("test/usd/scenes/camera_z_up.usda");
+        auto&& z_camera = static_cast<const PinholeCameraSpec&>(
+            z_spec.cameras().spec(z_spec.render().camera));
+        expect(is_near(z_camera.world_up(), luisa::make_float3(0.0f, 0.0f, 1.0f)));
     };
 
     "triangulate_left_handed_face_varying_mesh"_test = []

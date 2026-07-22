@@ -144,7 +144,10 @@ void ProgressiveIntegrator::Instance::render_interactive(Stream& stream)
     sampler()->reset(command_buffer, resolution, resolution.x * resolution.y);
     command_buffer << synchronize();
 
-    FpsCameraController controller{camera->camera_to_world(), FpsCameraController::Config{}};
+    FpsCameraController controller{
+        camera->camera_to_world(),
+        camera->base()->world_up(),
+        FpsCameraController::Config{}};
 
     Kernel2D render_kernel = [&](UInt frame_index, Float time) noexcept
     {

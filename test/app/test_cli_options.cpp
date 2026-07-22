@@ -2,6 +2,7 @@
 
 #include "ut/ut.hpp"
 
+#include <cmath>
 #include <filesystem>
 #include <stdexcept>
 #include <string>
@@ -20,10 +21,16 @@ namespace
 {
     std::vector<std::string> storage;
     storage.reserve(values.size());
-    for (auto value : values) { storage.emplace_back(value); }
+    for (auto value : values)
+    {
+        storage.emplace_back(value);
+    }
     std::vector<char*> argv;
     argv.reserve(storage.size());
-    for (auto& value : storage) { argv.emplace_back(value.data()); }
+    for (auto& value : storage)
+    {
+        argv.emplace_back(value.data());
+    }
     return parse_command_line(static_cast<int>(argv.size()), argv.data());
 }
 
@@ -46,8 +53,7 @@ static auto test_cli_options_registration = []
 {
     "parse_all_overrides"_test = []
     {
-        auto options = parse({"Yutrel", "dx", "scene.pbrt", "--headless", "--spp", "32",
-                              "--seed", "7", "--resolution", "640x480", "--output", "result.exr"});
+        auto options = parse({"Yutrel", "dx", "scene.pbrt", "--headless", "--spp", "32", "--seed", "7", "--resolution", "640x480", "--output", "result.exr", "--world-up", "-1,2,0"});
         expect(options.backend == "dx");
         expect(options.scene_path == std::filesystem::path{"scene.pbrt"});
         expect(options.headless);
@@ -56,6 +62,13 @@ static auto test_cli_options_registration = []
         expect(static_cast<bool>(options.overrides.resolution));
         expect(luisa::all(*options.overrides.resolution == luisa::make_uint2(640u, 480u)));
         expect(options.overrides.output && options.overrides.output->is_absolute());
+        expect(static_cast<bool>(options.overrides.world_up));
+        if (options.overrides.world_up)
+        {
+            expect(std::abs(options.overrides.world_up->x + 0.4472136f) < 1e-5f);
+            expect(std::abs(options.overrides.world_up->y - 0.8944272f) < 1e-5f);
+            expect(std::abs(options.overrides.world_up->z) < 1e-5f);
+        }
     };
 
     "accept_scene_format_for_dispatch"_test = []
@@ -74,6 +87,12 @@ static auto test_cli_options_registration = []
         expect(parse_fails({"Yutrel", "dx", "scene.pbrt", "--resolution", "65536x65536"}));
         expect(parse_fails({"Yutrel", "dx", "scene.pbrt", "--output", "result.png"}));
         expect(parse_fails({"Yutrel", "dx", "scene.pbrt", "--spp", "1", "--spp", "2"}));
+        expect(parse_fails({"Yutrel", "dx", "scene.pbrt", "--world-up", "0,0,0"}));
+        expect(parse_fails({"Yutrel", "dx", "scene.pbrt", "--world-up", "1,0"}));
+        expect(parse_fails({"Yutrel", "dx", "scene.pbrt", "--world-up", "1,0,0,0"}));
+        expect(parse_fails({"Yutrel", "dx", "scene.pbrt", "--world-up", "x,0,0"}));
+        expect(parse_fails({"Yutrel", "dx", "scene.pbrt", "--world-up", "inf,0,0"}));
+        expect(parse_fails({"Yutrel", "dx", "scene.pbrt", "--world-up", "1,0,0", "--world-up", "0,1,0"}));
         expect(parse_fails({"Yutrel", "dx", "scene.pbrt", "--unknown"}));
     };
     return 0;

@@ -77,13 +77,14 @@ static auto test_camera_registration = []
 
     "camera_matrix_validation"_test = []
     {
-        auto valid = make_float4x4(
+        auto world_up = make_float3(0.0f, 1.0f, 0.0f);
+        auto valid    = make_float4x4(
             make_float4(2.0f, 0.0f, 0.0f, 0.0f),
             make_float4(1.0f, 3.0f, 0.0f, 0.0f),
             make_float4(0.0f, 1.0f, 4.0f, 0.0f),
             make_float4(4.0f, 5.0f, 6.0f, 1.0f));
-        expect(!PinholeCameraSpec{valid, make_float2(0.0f, 1.0f), 0u, 45.0f}.validate().has_value());
-        expect(!ThinLensCameraSpec{valid, make_float2(0.0f, 1.0f), 0u, 2.0f, 35.0f, 10.0f}.validate().has_value());
+        expect(!PinholeCameraSpec{valid, world_up, make_float2(0.0f, 1.0f), 0u, 45.0f}.validate().has_value());
+        expect(!ThinLensCameraSpec{valid, world_up, make_float2(0.0f, 1.0f), 0u, 2.0f, 35.0f, 10.0f}.validate().has_value());
 
         auto non_finite    = valid;
         non_finite[0].x    = std::numeric_limits<float>::infinity();
@@ -91,16 +92,41 @@ static auto test_camera_registration = []
         non_affine[0].w    = 0.25f;
         auto singular      = valid;
         singular[0]        = make_float4(0.0f);
-        auto pinhole_error = PinholeCameraSpec{non_finite, make_float2(0.0f, 1.0f), 0u, 45.0f}.validate();
+        auto pinhole_error = PinholeCameraSpec{non_finite, world_up, make_float2(0.0f, 1.0f), 0u, 45.0f}.validate();
         expect(contains(pinhole_error, "finite"));
-        pinhole_error = PinholeCameraSpec{non_affine, make_float2(0.0f, 1.0f), 0u, 45.0f}.validate();
+        pinhole_error = PinholeCameraSpec{non_affine, world_up, make_float2(0.0f, 1.0f), 0u, 45.0f}.validate();
         expect(contains(pinhole_error, "affine"));
-        pinhole_error = PinholeCameraSpec{singular, make_float2(0.0f, 1.0f), 0u, 45.0f}.validate();
+        pinhole_error = PinholeCameraSpec{singular, world_up, make_float2(0.0f, 1.0f), 0u, 45.0f}.validate();
         expect(contains(pinhole_error, "singular"));
         auto thin_lens_error = ThinLensCameraSpec{
-            singular, make_float2(0.0f, 1.0f), 0u, 2.0f, 35.0f, 10.0f}
+            singular,
+            world_up,
+            make_float2(0.0f, 1.0f),
+            0u,
+            2.0f,
+            35.0f,
+            10.0f}
                                    .validate();
         expect(contains(thin_lens_error, "singular"));
+
+        auto zero_up_error = PinholeCameraSpec{
+            valid,
+            make_float3(0.0f),
+            make_float2(0.0f, 1.0f),
+            0u,
+            45.0f}
+                                 .validate();
+        expect(contains(zero_up_error, "non-zero"));
+        auto invalid_up          = world_up;
+        invalid_up.x             = std::numeric_limits<float>::infinity();
+        auto non_finite_up_error = PinholeCameraSpec{
+            valid,
+            invalid_up,
+            make_float2(0.0f, 1.0f),
+            0u,
+            45.0f}
+                                       .validate();
+        expect(contains(non_finite_up_error, "finite"));
     };
 
     "fps_controller_preserves_orientation"_test = []
@@ -113,8 +139,9 @@ static auto test_camera_registration = []
         auto mirrored = regular;
         mirrored[0].x = -mirrored[0].x;
 
-        FpsCameraController regular_controller{regular, FpsCameraController::Config{}};
-        FpsCameraController mirrored_controller{mirrored, FpsCameraController::Config{}};
+        auto world_up = make_float3(0.0f, 1.0f, 0.0f);
+        FpsCameraController regular_controller{regular, world_up, FpsCameraController::Config{}};
+        FpsCameraController mirrored_controller{mirrored, world_up, FpsCameraController::Config{}};
         auto regular_result  = regular_controller.camera_to_world();
         auto mirrored_result = mirrored_controller.camera_to_world();
 
@@ -133,6 +160,70 @@ static auto test_camera_registration = []
         expect(is_near(regular_result[3].y, mirrored_result[3].y));
         expect(is_near(regular_result[3].z, mirrored_result[3].z));
         expect(is_near(regular_result[3].w, mirrored_result[3].w));
+    };
+
+    "fps_controller_levels_roll_against_world_up"_test = []
+    {
+        constexpr auto inv_sqrt_two = 0.70710678118f;
+        auto rolled                 = make_float4x4(
+            make_float4(inv_sqrt_two, inv_sqrt_two, 0.0f, 0.0f),
+            make_float4(-inv_sqrt_two, inv_sqrt_two, 0.0f, 0.0f),
+            make_float4(0.0f, 0.0f, 1.0f, 0.0f),
+            make_float4(1.0f, 2.0f, 3.0f, 1.0f));
+        FpsCameraController controller{
+            rolled,
+            make_float3(0.0f, 1.0f, 0.0f),
+            FpsCameraController::Config{}};
+
+        auto leveled = controller.camera_to_world();
+        expect(is_near(leveled[0].x, 1.0f));
+        expect(is_near(leveled[0].y, 0.0f));
+        expect(is_near(leveled[1].x, 0.0f));
+        expect(is_near(leveled[1].y, 1.0f));
+        expect(is_near(leveled[3].x, 1.0f));
+        expect(is_near(leveled[3].y, 2.0f));
+        expect(is_near(leveled[3].z, 3.0f));
+    };
+
+    "fps_controller_uses_world_up_for_look_and_vertical_move"_test = []
+    {
+        FpsCameraController::Config config{
+            .move_speed        = 2.0f,
+            .fast_move_speed   = 4.0f,
+            .mouse_sensitivity = 1.0f,
+            .max_pitch_radians = 1.55334306f,
+        };
+        FpsCameraController controller{
+            make_float4x4(1.0f),
+            make_float3(0.0f, 1.0f, 0.0f),
+            config};
+
+        auto look_changed = controller.update(
+            FpsCameraController::Input{
+                .look_delta = make_float2(-0.5f * luisa::pi, 0.25f),
+                .mouse_look = true,
+            },
+            1.0f);
+        expect(look_changed);
+        auto looked = controller.camera_to_world();
+        expect(is_near(dot(make_float3(looked[0]), make_float3(0.0f, 1.0f, 0.0f)), 0.0f));
+        expect(std::abs(looked[2].y) > 0.1f);
+
+        auto move_changed = controller.update(
+            FpsCameraController::Input{.movement = make_float3(0.0f, 0.0f, 1.0f)},
+            2.0f);
+        expect(move_changed);
+        auto moved_up = controller.camera_to_world();
+        expect(is_near(moved_up[3].y, 4.0f));
+
+        (void)controller.update(
+            FpsCameraController::Input{
+                .movement = make_float3(0.0f, 0.0f, -1.0f),
+                .fast     = true,
+            },
+            1.0f);
+        auto moved_down = controller.camera_to_world();
+        expect(is_near(moved_down[3].y, 0.0f));
     };
 
     return 0;

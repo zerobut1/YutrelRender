@@ -37,7 +37,7 @@ private:
     float m_fov;
 
 public:
-    PinholeCamera(float4x4 camera_to_world, float2 shutter_span,
+    PinholeCamera(float4x4 camera_to_world, float3 world_up, float2 shutter_span,
                   uint shutter_samples_count, float fov) noexcept;
     ~PinholeCamera() noexcept override = default;
 
@@ -49,24 +49,32 @@ class PinholeCameraSpec final : public CameraSpec
 {
 private:
     float4x4 _camera_to_world;
+    float3 _world_up;
     float2 _shutter_span;
     uint _shutter_samples_count;
     float _fov;
 
 public:
-    PinholeCameraSpec(float4x4 camera_to_world, float2 shutter_span,
+    PinholeCameraSpec(float4x4 camera_to_world, float3 world_up, float2 shutter_span,
                       uint shutter_samples_count, float fov) noexcept
-        : _camera_to_world{camera_to_world}, _shutter_span{shutter_span},
+        : _camera_to_world{camera_to_world}, _world_up{world_up}, _shutter_span{shutter_span},
           _shutter_samples_count{shutter_samples_count}, _fov{fov} {}
 
     PinholeCameraSpec(float3 position, float3 lookat, float3 up, float2 shutter_span,
                       uint shutter_samples_count, float fov) noexcept
         : PinholeCameraSpec{make_view_camera_to_world(position, lookat, up),
-                            shutter_span, shutter_samples_count, fov} {}
+                            up,
+                            shutter_span,
+                            shutter_samples_count,
+                            fov} {}
 
     [[nodiscard]] luisa::optional<luisa::string> validate() const noexcept override
     {
         if (auto error = validate_camera_to_world(_camera_to_world))
+        {
+            return error;
+        }
+        if (auto error = validate_camera_world_up(_world_up))
         {
             return error;
         }
@@ -81,6 +89,7 @@ public:
         return luisa::nullopt;
     }
     [[nodiscard]] auto camera_to_world() const noexcept { return _camera_to_world; }
+    [[nodiscard]] auto world_up() const noexcept { return _world_up; }
     [[nodiscard]] auto shutter_span() const noexcept { return _shutter_span; }
     [[nodiscard]] auto fov() const noexcept { return _fov; }
     [[nodiscard]] const Camera* build(SceneBuilder& builder) const noexcept override;

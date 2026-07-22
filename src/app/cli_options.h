@@ -15,6 +15,7 @@ struct CliOverrides
     luisa::optional<uint> seed;
     luisa::optional<uint2> resolution;
     luisa::optional<std::filesystem::path> output;
+    luisa::optional<float3> world_up;
 };
 
 struct CommandLineOptions

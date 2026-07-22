@@ -45,6 +45,7 @@ struct CameraDesc
     float shutter_open{0.0f};
     float shutter_close{1.0f};
     Matrix4 pbrt_transform{identity_matrix4};
+    luisa::optional<float3> world_up;
     luisa::vector<RawParameter> parameters;
 };
 

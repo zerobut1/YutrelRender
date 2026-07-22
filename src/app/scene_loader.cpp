@@ -38,6 +38,7 @@ SceneSpec load_scene(
                 .seed       = overrides.seed,
                 .resolution = overrides.resolution,
                 .output     = overrides.output,
+                .world_up   = overrides.world_up,
             });
     }
     if (extension == ".usd" ||
@@ -52,6 +53,7 @@ SceneSpec load_scene(
                 .seed       = overrides.seed,
                 .resolution = overrides.resolution,
                 .output     = overrides.output,
+                .world_up   = overrides.world_up,
             });
     }
     throw std::runtime_error{

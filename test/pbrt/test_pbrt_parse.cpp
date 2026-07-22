@@ -74,6 +74,21 @@ static auto test_pbrt_parse_registration = []
         expect(is_near(defaults.camera.shutter_close, 1.0f));
     };
 
+    "parse_camera_world_up"_test = []
+    {
+        auto scene = PbrtParser::parse("test/scenes/camera_world_up.pbrt");
+        expect(scene.camera.world_up.has_value());
+        if (scene.camera.world_up)
+        {
+            expect(is_near(scene.camera.world_up->x, 0.0f));
+            expect(is_near(scene.camera.world_up->y, 1.0f));
+            expect(is_near(scene.camera.world_up->z, 0.0f));
+        }
+
+        auto fallback = PbrtParser::parse("test/scenes/import_geometry.pbrt");
+        expect(!fallback.camera.world_up.has_value());
+    };
+
     "parse_sobol_sampler"_test = []
     {
         auto scene = PbrtParser::parse("test/scenes/sobol_sampler.pbrt");

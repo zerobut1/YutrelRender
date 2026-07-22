@@ -1,0 +1,7 @@
+LookAt 0 0 5  0 0 0  0 2 0
+Camera "perspective"
+
+WorldBegin
+
+Material "diffuse"
+Shape "sphere"

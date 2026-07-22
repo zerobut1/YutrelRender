@@ -12,6 +12,7 @@ from pathlib import Path
 
 UINT32_MAX = 2**32 - 1
 SUPPORTED_BACKENDS = ("dx", "cuda", "vk")
+SUPPORTED_SCENE_EXTENSIONS = (".pbrt", ".usd", ".usda", ".usdc", ".usdz")
 DEFAULT_RESOLUTION = (1920, 1080)
 _RESOLUTION_PARAMETER = re.compile(
     r'"integer\s+(xresolution|yresolution)"\s*\[?\s*(\d+)',
@@ -62,15 +63,23 @@ def read_pbrt_resolution(
     )
 
 
+def read_scene_resolution(
+    path: Path, fallback: tuple[int, int] = DEFAULT_RESOLUTION
+) -> tuple[int, int]:
+    if path.suffix.lower() == ".pbrt":
+        return read_pbrt_resolution(path, fallback)
+    return fallback
+
+
 def validate_render_options(options: RenderOptions) -> None:
     if options.backend not in SUPPORTED_BACKENDS:
         raise ValueError(f"Unsupported backend: {options.backend}")
     if not isinstance(options.mode, RenderMode):
         raise ValueError(f"Unsupported render mode: {options.mode}")
     if not options.scene.is_file():
-        raise ValueError("Select an existing PBRT scene.")
-    if options.scene.suffix.lower() != ".pbrt":
-        raise ValueError("The scene must use the .pbrt extension.")
+        raise ValueError("Select an existing PBRT or USD scene.")
+    if options.scene.suffix.lower() not in SUPPORTED_SCENE_EXTENSIONS:
+        raise ValueError("The scene must use a PBRT or USD extension.")
     if not 0 < options.spp <= UINT32_MAX:
         raise ValueError("SPP must be between 1 and UINT32_MAX.")
     if not 0 <= options.seed <= UINT32_MAX:

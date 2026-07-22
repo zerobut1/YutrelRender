@@ -64,10 +64,9 @@ namespace
     }
     constexpr auto degrees_to_radians = 0.01745329251994329577f;
     constexpr auto radians_to_degrees = 57.295779513082320876f;
-    auto aspect_scale = static_cast<float>(resolution.y) /
-                        static_cast<float>(resolution.x);
-    return 2.0f * std::atan(
-                      std::tan(0.5f * fov * degrees_to_radians) * aspect_scale) *
+    auto aspect_scale                 = static_cast<float>(resolution.y) /
+                                        static_cast<float>(resolution.x);
+    return 2.0f * std::atan(std::tan(0.5f * fov * degrees_to_radians) * aspect_scale) *
            radians_to_degrees;
 }
 
@@ -776,10 +775,26 @@ SceneSpec PbrtImporter::import(
     PbrtImportOptions options)
 {
     auto scene = PbrtParser::parse(path);
-    if (options.spp) { scene.sampler.pixel_samples = *options.spp; }
-    if (options.seed) { scene.sampler.seed = *options.seed; }
-    if (options.resolution) { scene.film.resolution = *options.resolution; }
-    if (options.output) { scene.film.filename = std::move(*options.output); }
+    if (options.spp)
+    {
+        scene.sampler.pixel_samples = *options.spp;
+    }
+    if (options.seed)
+    {
+        scene.sampler.seed = *options.seed;
+    }
+    if (options.resolution)
+    {
+        scene.film.resolution = *options.resolution;
+    }
+    if (options.output)
+    {
+        scene.film.filename = std::move(*options.output);
+    }
+    if (options.world_up)
+    {
+        scene.camera.world_up = *options.world_up;
+    }
     return import(std::move(scene));
 }
 
@@ -798,7 +813,7 @@ SceneSpec PbrtImporter::import(PbrtScene scene)
         {
             if (desc.filename.empty())
             {
-                auto L = desc.L.value_or(make_float3(1.0f));
+                auto L       = desc.L.value_or(make_float3(1.0f));
                 auto texture = builder.add_anonymous_texture<ConstantTextureSpec>(
                     desc.source,
                     make_float4(L, 1.0f));
@@ -1145,15 +1160,11 @@ SceneSpec PbrtImporter::import(PbrtScene scene)
             auto iter = texture_declarations.find(*shape.alpha_texture);
             if (iter == texture_declarations.end())
             {
-                fail(shape.source, luisa::format(
-                                       "PBRT shape alpha references undefined texture '{}'.",
-                                       *shape.alpha_texture));
+                fail(shape.source, luisa::format("PBRT shape alpha references undefined texture '{}'.", *shape.alpha_texture));
             }
             if (iter->second->value_type != TextureDesc::ValueType::Float)
             {
-                fail(shape.source, luisa::format(
-                                       "PBRT shape alpha texture '{}' must be a float texture.",
-                                       *shape.alpha_texture));
+                fail(shape.source, luisa::format("PBRT shape alpha texture '{}' must be a float texture.", *shape.alpha_texture));
             }
             return builder.reference_texture(*shape.alpha_texture, shape.source);
         }
@@ -1167,7 +1178,8 @@ SceneSpec PbrtImporter::import(PbrtScene scene)
             return iter->second;
         }
         auto texture = builder.add_anonymous_texture<ConstantTextureSpec>(
-            shape.source, make_float4(shape.alpha));
+            shape.source,
+            make_float4(shape.alpha));
         alpha_constant_cache.emplace(bits, texture);
         return texture;
     };
@@ -1249,7 +1261,9 @@ SceneSpec PbrtImporter::import(PbrtScene scene)
             else
             {
                 auto opacity_surface = builder.add_anonymous_surface<OpacitySurfaceSpec>(
-                    shape.source, surface, *alpha_texture);
+                    shape.source,
+                    surface,
+                    *alpha_texture);
                 opacity_surface_cache.emplace(key, opacity_surface);
                 surface = opacity_surface;
             }
@@ -1282,6 +1296,13 @@ SceneSpec PbrtImporter::import(PbrtScene scene)
     }
 
     auto camera_transform = camera_to_world(scene.camera.pbrt_transform, scene.camera.source);
+    auto camera_world_up  = scene.camera.world_up;
+    if (!camera_world_up)
+    {
+        camera_world_up = normalize(make_float3(camera_transform[1]));
+        LUISA_WARNING(
+            "PBRT camera has no world-up metadata; falling back to its local up axis for interactive navigation.");
+    }
     auto filename = resolve_relative_to_scene(scene.source_path, scene.film.filename);
     if (!is_exr_path(filename))
     {
@@ -1303,9 +1324,10 @@ SceneSpec PbrtImporter::import(PbrtScene scene)
         fail("PBRT Film exposure ratio is not finite.");
     }
     auto vertical_fov = pbrt_vertical_fov(scene.camera.fov, scene.film.resolution);
-    auto camera = builder.add_camera<PinholeCameraSpec>(
+    auto camera       = builder.add_camera<PinholeCameraSpec>(
         SpecMeta{.name = "pbrt_camera", .source = scene.camera.source},
         camera_transform,
+        *camera_world_up,
         shutter_span,
         0u,
         vertical_fov);
@@ -1360,10 +1382,10 @@ SceneSpec PbrtImporter::import(PbrtScene scene)
     });
     auto result = builder.finish();
 
-    auto randomization = scene.sampler.type == SamplerDesc::Type::Sobol ||
-                                 scene.sampler.type == SamplerDesc::Type::ZSobol
-                             ? "fastowen"
-                             : "n/a";
+    auto randomization  = scene.sampler.type == SamplerDesc::Type::Sobol ||
+                                  scene.sampler.type == SamplerDesc::Type::ZSobol
+                              ? "fastowen"
+                              : "n/a";
     auto filter_summary = scene.filter.type == FilterDesc::Type::Gaussian
                               ? luisa::format("gaussian, radius=({}, {}), sigma={}", scene.filter.radius.x, scene.filter.radius.y, scene.filter.sigma)
                               : luisa::format("triangle, radius=({}, {})", scene.filter.radius.x, scene.filter.radius.y);
@@ -1425,7 +1447,10 @@ SceneSpec PbrtImporter::import(PbrtScene scene)
             auto L = light.L.value_or(make_float3(1.0f));
             LUISA_INFO(
                 "PBRT environment: type=uniform-infinite, L=({}, {}, {}), scale={}, illuminance={}.",
-                L.x, L.y, L.z, light.scale,
+                L.x,
+                L.y,
+                L.z,
+                light.scale,
                 light.illuminance.value_or(-1.0f));
         }
         else

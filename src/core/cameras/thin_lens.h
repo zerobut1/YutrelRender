@@ -46,7 +46,7 @@ private:
     float m_focus_distance;
 
 public:
-    ThinLensCamera(float4x4 camera_to_world, float2 shutter_span,
+    ThinLensCamera(float4x4 camera_to_world, float3 world_up, float2 shutter_span,
                    uint shutter_samples_count, float aperture,
                    float focal_length, float focus_distance) noexcept;
     ~ThinLensCamera() noexcept override = default;
@@ -66,6 +66,7 @@ class ThinLensCameraSpec final : public CameraSpec
 {
 private:
     float4x4 _camera_to_world;
+    float3 _world_up;
     float2 _shutter_span;
     uint _shutter_samples_count;
     float _aperture;
@@ -73,21 +74,29 @@ private:
     float _focus_distance;
 
 public:
-    ThinLensCameraSpec(float4x4 camera_to_world, float2 shutter_span,
+    ThinLensCameraSpec(float4x4 camera_to_world, float3 world_up, float2 shutter_span,
                        uint shutter_samples_count, float aperture,
                        float focal_length, float focus_distance) noexcept
-        : _camera_to_world{camera_to_world}, _shutter_span{shutter_span},
+        : _camera_to_world{camera_to_world}, _world_up{world_up}, _shutter_span{shutter_span},
           _shutter_samples_count{shutter_samples_count}, _aperture{aperture},
           _focal_length{focal_length}, _focus_distance{focus_distance} {}
 
     ThinLensCameraSpec(float3 position, float3 lookat, float3 up, float2 shutter_span, uint shutter_samples_count, float aperture, float focal_length, float focus_distance) noexcept
         : ThinLensCameraSpec{make_view_camera_to_world(position, lookat, up),
-                             shutter_span, shutter_samples_count, aperture,
-                             focal_length, focus_distance} {}
+                             up,
+                             shutter_span,
+                             shutter_samples_count,
+                             aperture,
+                             focal_length,
+                             focus_distance} {}
 
     [[nodiscard]] luisa::optional<luisa::string> validate() const noexcept override
     {
         if (auto error = validate_camera_to_world(_camera_to_world))
+        {
+            return error;
+        }
+        if (auto error = validate_camera_world_up(_world_up))
         {
             return error;
         }
@@ -102,6 +111,7 @@ public:
         return luisa::nullopt;
     }
     [[nodiscard]] auto camera_to_world() const noexcept { return _camera_to_world; }
+    [[nodiscard]] auto world_up() const noexcept { return _world_up; }
     [[nodiscard]] const Camera* build(SceneBuilder& builder) const noexcept override;
 };
 
