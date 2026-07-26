@@ -30,3 +30,13 @@ uv run python tools/pmx_to_pbrt.py path/to/model.pmx
 Outputs are written to `path/to/pbrt/` by default. The conversion preserves positions,
 normals, UVs, base textures, material triangle ranges, and texture alpha masks. Bones,
 morphs, and animation are intentionally not exported.
+
+Export the active Blender scene to Yutrel's supported PBRT subset:
+
+```text
+blender --background path/to/scene.blend --python tools/export_blend_to_pbrt.py -- --output path/to/scene.pbrt
+```
+
+The exporter writes one binary PLY per visible mesh, the active perspective camera,
+constant world background, and Point, Sun, or rectangular Area lights. Point lights are
+converted to emissive spheres. All scene meshes use a white diffuse material.
