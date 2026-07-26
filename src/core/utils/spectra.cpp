@@ -693,17 +693,34 @@ void SampledWavelengths::terminate_secondary() const noexcept
 {
     compute::outline([&]
     {
-        auto terminated = def(true);
+        auto already_terminated = m_pdfs[1u] == 0.0f;
+        for (auto i = 2u; i < dimension(); i++)
+        {
+            already_terminated &= m_pdfs[i] == 0.0f;
+        }
         for (auto i = 1u; i < dimension(); i++)
         {
-            terminated &= m_pdfs[i] == 0.0f;
             m_pdfs[i] = 0.0f;
         }
-        $if(!terminated)
+        $if(!already_terminated)
         {
-            m_pdfs[0u] *= 1.0f / static_cast<float>(dimension());
+            m_pdfs[0u] = m_pdfs[0u] * (1.0f / static_cast<float>(dimension()));
         };
     });
+}
+
+Bool SampledWavelengths::secondary_terminated() const noexcept
+{
+    if (dimension() <= 1u) { return def(true); }
+    auto result = def(true);
+    compute::outline([&]
+    {
+        for (auto i = 1u; i < dimension(); i++)
+        {
+            result &= m_pdfs[i] == 0.0f;
+        }
+    });
+    return result;
 }
 
 } // namespace Yutrel

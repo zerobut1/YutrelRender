@@ -29,3 +29,5 @@ __pycache__
 projects/Yutrel/scene
 projects/Yutrel/scenes
 scene
+*.exr
+.kimix_cache

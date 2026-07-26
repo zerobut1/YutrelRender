@@ -1,0 +1,45 @@
+Integrator "path"
+    "integer maxdepth" [5]
+Sampler "independent"
+    "integer pixelsamples" [256]
+Film "rgb"
+    "integer xresolution" [8]
+    "integer yresolution" [8]
+    "string filename" "glass_plate_const.exr"
+Camera "perspective"
+    "float fov" [90]
+
+WorldBegin
+
+# NON-dispersive glass plate (constant eta)
+MakeNamedMaterial "Glass"
+    "string type" [ "dielectric" ]
+    "float eta" [ 1.78 ]
+    "float roughness" [ 0 ]
+
+# White diffuse floor at z=0
+Material "diffuse"
+    "rgb reflectance" [1 1 1]
+Shape "trianglemesh"
+    "point3 P" [-10 -10 0  10 -10 0  10 10 0  -10 10 0]
+    "integer indices" [0 1 2  0 2 3]
+
+# Glass plate
+AttributeBegin
+    NamedMaterial "Glass"
+    Shape "trianglemesh"
+        "point3 P" [-2 -2 1  2 -2 1  2 2 1  -2 2 1  -2 -2 1.1  2 -2 1.1  2 2 1.1  -2 2 1.1]
+        "integer indices" [0 2 1  0 3 2  4 5 6  4 6 7  0 1 5  0 5 4  2 3 7  2 7 6  1 2 6  1 6 5  0 4 7  0 7 3]
+AttributeEnd
+
+# White area light above
+AttributeBegin
+    Translate 0 0 4
+    AreaLightSource "diffuse"
+        "rgb L" [10 10 10]
+    Material "diffuse"
+        "rgb reflectance" [0 0 0]
+    Shape "trianglemesh"
+        "point3 P" [-1 -1 0  1 -1 0  1 1 0  -1 1 0]
+        "integer indices" [0 2 1  0 3 2]
+AttributeEnd

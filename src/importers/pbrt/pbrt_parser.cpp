@@ -799,6 +799,10 @@ private:
         {
             m_desc.integrator.type = IntegratorDesc::Type::VolPath;
         }
+        else if (type == "sppm")
+        {
+            m_desc.integrator.type = IntegratorDesc::Type::SPPM;
+        }
         else
         {
             fail(command, luisa::format("unsupported Integrator '{}'", type));
@@ -806,6 +810,11 @@ private:
         auto params                  = parse_parameters();
         m_desc.integrator.source     = command.loc;
         m_desc.integrator.max_depth  = one_uint(params, "maxdepth", command, 5u);
+        if (m_desc.integrator.type == IntegratorDesc::Type::SPPM)
+        {
+            m_desc.integrator.photons_per_iteration = one_uint(params, "photonsperiteration", command, 0u);
+            m_desc.integrator.radius                = one_float(params, "radius", command, 1.0f);
+        }
         m_desc.integrator.parameters = std::move(params);
     }
 

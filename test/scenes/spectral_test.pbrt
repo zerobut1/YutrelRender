@@ -1,0 +1,32 @@
+Integrator "path"
+    "integer maxdepth" [5]
+Sampler "independent"
+    "integer pixelsamples" [64]
+Film "rgb"
+    "integer xresolution" [8]
+    "integer yresolution" [8]
+    "string filename" "spectral_test.exr"
+Camera "perspective"
+    "float fov" [90]
+
+WorldBegin
+
+Material "diffuse"
+    "rgb reflectance" [1 1 1]
+
+# Floor at z=0
+Shape "trianglemesh"
+    "point3 P" [-10 -10 0  10 -10 0  10 10 0  -10 10 0]
+    "integer indices" [0 1 2  0 2 3]
+
+# White area light above
+AttributeBegin
+    Translate 0 0 3
+    AreaLightSource "diffuse"
+        "rgb L" [10 10 10]
+    Material "diffuse"
+        "rgb reflectance" [0 0 0]
+    Shape "trianglemesh"
+        "point3 P" [-1 -1 0  1 -1 0  1 1 0  -1 1 0]
+        "integer indices" [0 2 1  0 3 2]
+AttributeEnd

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <luisa/dsl/syntax.h>
+#include <luisa/runtime/rtx/ray.h>
 
 #include "base/texture.h"
 #include "utils/command_buffer.h"
@@ -127,7 +128,26 @@ public:
     [[nodiscard]] auto& swl() const noexcept { return m_swl; }
     [[nodiscard]] auto time() const noexcept { return m_time; }
 
+    struct EmissionSample
+    {
+        SampledSpectrum Le;
+        Var<Ray> ray;
+        Float pdf;
+        Float cos_theta;
+        [[nodiscard]] static auto zero(uint dimension) noexcept
+        {
+            return EmissionSample{
+                .Le        = SampledSpectrum{dimension},
+                .ray       = {},
+                .pdf       = 0.0f,
+                .cos_theta = 0.0f,
+            };
+        }
+    };
+
     [[nodiscard]] virtual Evaluation evaluate(const Interaction& it_light, const Interaction& it_from) const noexcept = 0;
+    [[nodiscard]] virtual EmissionSample sample_le(
+        Expr<uint> instance_id, Expr<float2> u_position, Expr<float2> u_direction) const noexcept;
 };
 
 } // namespace Yutrel

@@ -1,0 +1,31 @@
+Integrator "sppm"
+    "integer maxdepth" [5]
+    "integer photonsperiteration" [50000]
+    "float radius" [0.5]
+
+Sampler "independent"
+    "integer pixelsamples" [4]
+
+Film "rgb"
+    "integer xresolution" [8]
+    "integer yresolution" [8]
+    "string filename" "sppm_basic.exr"
+
+Camera "perspective"
+    "float fov" [45]
+
+WorldBegin
+
+Material "diffuse"
+    "rgb reflectance" [0.5 0.5 0.5]
+
+Shape "sphere"
+    "float radius" [1]
+
+AttributeBegin
+    AreaLightSource "diffuse"
+        "rgb L" [10 10 10]
+    Translate 0 2 0
+    Shape "sphere"
+        "float radius" [0.5]
+AttributeEnd

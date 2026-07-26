@@ -27,6 +27,7 @@
 #include "filters/gaussian.h"
 #include "filters/triangle.h"
 #include "integrators/path.h"
+#include "integrators/sppm.h"
 #include "integrators/vol_path.h"
 #include "lights/diffuse.h"
 #include "media/homogeneous.h"
@@ -313,8 +314,20 @@ void validate_material(const MaterialDesc& material, luisa::string_view owner, b
 
 void validate_pbrt_scene(const PbrtScene& scene)
 {
-    static constexpr std::array integrator_allowed{ParameterKey{"integer", "maxdepth"}};
-    validate_parameters(scene.integrator.parameters, scene.integrator.type == IntegratorDesc::Type::Path ? "Integrator 'path'" : "Integrator 'volpath'", integrator_allowed);
+    if (scene.integrator.type == IntegratorDesc::Type::SPPM)
+    {
+        static constexpr std::array sppm_allowed{
+            ParameterKey{"integer", "maxdepth"},
+            ParameterKey{"integer", "photonsperiteration"},
+            ParameterKey{"float", "radius"},
+        };
+        validate_parameters(scene.integrator.parameters, "Integrator 'sppm'", sppm_allowed);
+    }
+    else
+    {
+        static constexpr std::array integrator_allowed{ParameterKey{"integer", "maxdepth"}};
+        validate_parameters(scene.integrator.parameters, scene.integrator.type == IntegratorDesc::Type::Path ? "Integrator 'path'" : "Integrator 'volpath'", integrator_allowed);
+    }
 
     if (scene.sampler.type == SamplerDesc::Type::Halton)
     {
@@ -1393,9 +1406,22 @@ SceneSpec PbrtImporter::import(PbrtScene scene)
         }
         fail("Unsupported PBRT sampler type.");
     }();
-    auto integrator = scene.integrator.type == IntegratorDesc::Type::Path
-                          ? builder.add_integrator<PathIntegratorSpec>(SpecMeta{.name = "pbrt_integrator", .source = scene.integrator.source}, scene.integrator.max_depth)
-                          : builder.add_integrator<VolPathIntegratorSpec>(SpecMeta{.name = "pbrt_integrator", .source = scene.integrator.source}, scene.integrator.max_depth);
+    auto integrator = [&]() {
+        switch (scene.integrator.type)
+        {
+        case IntegratorDesc::Type::Path:
+            return builder.add_integrator<PathIntegratorSpec>(SpecMeta{.name = "pbrt_integrator", .source = scene.integrator.source}, scene.integrator.max_depth);
+        case IntegratorDesc::Type::VolPath:
+            return builder.add_integrator<VolPathIntegratorSpec>(SpecMeta{.name = "pbrt_integrator", .source = scene.integrator.source}, scene.integrator.max_depth);
+        case IntegratorDesc::Type::SPPM:
+        {
+            auto photons = scene.integrator.photons_per_iteration;
+            if (photons == 0u) { photons = scene.film.resolution.x * scene.film.resolution.y; }
+            return builder.add_integrator<SPPMIntegratorSpec>(SpecMeta{.name = "pbrt_integrator", .source = scene.integrator.source}, scene.integrator.max_depth, photons, scene.integrator.radius);
+        }
+        }
+        fail("Unsupported PBRT integrator type.");
+    }();
     builder.set_render(RenderSpec{
         .spectrum    = spectrum,
         .environment = environment,
@@ -1416,7 +1442,7 @@ SceneSpec PbrtImporter::import(PbrtScene scene)
                               : luisa::format("triangle, radius=({}, {})", scene.filter.radius.x, scene.filter.radius.y);
     LUISA_INFO(
         "PBRT render config: integrator={}, max_depth={}, rr=pbrt-v4, light_sampler=yutrel-uniform; sampler={}, spp={}, seed={}, randomization={}; filter={}.",
-        scene.integrator.type == IntegratorDesc::Type::Path ? "path" : "volpath",
+        scene.integrator.type == IntegratorDesc::Type::Path ? "path" : (scene.integrator.type == IntegratorDesc::Type::SPPM ? "sppm" : "volpath"),
         scene.integrator.max_depth,
         sampler_name(scene.sampler.type),
         scene.sampler.pixel_samples,

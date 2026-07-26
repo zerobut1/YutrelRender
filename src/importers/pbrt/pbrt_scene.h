@@ -72,9 +72,12 @@ struct IntegratorDesc
     {
         Path,
         VolPath,
+        SPPM,
     };
     Type type{Type::VolPath};
     uint max_depth{5u};
+    uint photons_per_iteration{0u}; // 0 means use pixel_count
+    float radius{1.0f};
     luisa::vector<RawParameter> parameters;
 };
 

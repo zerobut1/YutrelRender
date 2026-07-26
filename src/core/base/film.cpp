@@ -76,6 +76,24 @@ void Film::Instance::accumulate_single_writer(Expr<uint2> pixel, Expr<float3> rg
     };
 }
 
+void Film::Instance::set_pixel_single_writer(Expr<uint2> pixel, Expr<float3> rgb) const noexcept
+{
+    LUISA_ASSERT(m_image, "Film is not prepared.");
+    auto pixel_id    = pixel.y * base()->resolution().x + pixel.x;
+    auto exposed_rgb = rgb * base()->imaging_ratio();
+    auto has_nan     = any(compute::isnan(exposed_rgb));
+    auto has_inf     = any(compute::isinf(exposed_rgb));
+    renderer().record_film_non_finite(has_nan, has_inf);
+    auto clean = ite(has_nan | has_inf, make_float3(0.0f), exposed_rgb);
+    if (std::isfinite(base()->max_component_value()))
+    {
+        auto max_c = max(clean.x, max(clean.y, clean.z));
+        clean      = ite(max_c > base()->max_component_value(),
+                         clean * (base()->max_component_value() / max_c), clean);
+    }
+    m_image->write(pixel_id, make_float4(clean, 1.0f));
+}
+
 void Film::Instance::prepare(CommandBuffer& command_buffer, bool enable_display) noexcept
 {
     m_rendering_finished = false;

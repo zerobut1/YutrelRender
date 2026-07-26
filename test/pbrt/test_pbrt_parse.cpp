@@ -606,6 +606,15 @@ static auto test_pbrt_parse_registration = []
             expect(parse_error_contains(path, {path, "LightSource"}));
         }
     };
+
+    "parse_sppm_integrator"_test = []
+    {
+        auto scene = PbrtParser::parse("test/scenes/sppm_basic.pbrt");
+        expect(scene.integrator.type == IntegratorDesc::Type::SPPM);
+        expect(scene.integrator.max_depth == 5u);
+        expect(scene.integrator.photons_per_iteration == 50000u);
+        expect(is_near(scene.integrator.radius, 0.5f));
+    };
     return 0;
 }();
 

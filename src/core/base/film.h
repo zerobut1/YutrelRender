@@ -76,6 +76,9 @@ public:
         // Requires at most one invocation to write each pixel in a dispatch, with
         // consecutive dispatches ordered on the same stream.
         void accumulate_single_writer(Expr<uint2> pixel, Expr<float3> rgb, Expr<float> effective_spp) const noexcept;
+        // Overwrite a pixel with the given RGB value (no accumulation).
+        // Suitable for algorithms that compute the full pixel estimate each iteration.
+        void set_pixel_single_writer(Expr<uint2> pixel, Expr<float3> rgb) const noexcept;
 
         void prepare(CommandBuffer& command_buffer, bool enable_display) noexcept;
         void download(CommandBuffer& command_buffer, float4* buffer) const noexcept;
