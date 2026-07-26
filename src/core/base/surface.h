@@ -175,6 +175,7 @@ public:
     [[nodiscard]] virtual const Interaction& it() const noexcept = 0;
     [[nodiscard]] virtual UInt lobe_flags() const noexcept = 0;
     [[nodiscard]] virtual luisa::optional<Float> eta() const noexcept { return luisa::nullopt; }
+    [[nodiscard]] virtual luisa::optional<Bool> is_dispersive() const noexcept { return luisa::nullopt; }
 
     [[nodiscard]] Surface::Sample sample(Expr<float3> wo, Expr<float> u_lobe, Expr<float2> u,
                                          TransportMode mode = TransportMode::RADIANCE,

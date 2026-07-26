@@ -181,6 +181,7 @@ struct MaterialDesc
     luisa::optional<luisa::string> g_texture;
     float eta{1.5f};
     luisa::optional<luisa::string> eta_texture;
+    luisa::optional<luisa::string> eta_spectrum;
     bool remap_roughness{true};
     uint max_depth{10u};
     uint samples{1u};

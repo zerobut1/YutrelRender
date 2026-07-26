@@ -1088,6 +1088,19 @@ private:
         auto [albedo, albedo_texture]       = parse_rgb_texture("albedo", make_float3(0.0f));
         auto [g, g_texture]                 = parse_float_texture("g", 0.0f);
         auto [eta, eta_texture]             = parse_float_texture("eta", 1.5f);
+        luisa::optional<luisa::string> eta_spectrum;
+        if (auto p = find_param(params, "spectrum", "eta"))
+        {
+            if (p->values.size() != 1u)
+            {
+                fail(p->source, "'spectrum eta' expects exactly one named spectrum");
+            }
+            eta_spectrum.emplace(parse_string_token(p->values.front()));
+            if (find_param(params, "float", "eta") != nullptr || eta_texture)
+            {
+                fail(p->source, "material 'eta' cannot specify spectrum together with float or texture values");
+            }
+        }
         return MaterialDesc{
             .source              = command.loc,
             .type                = material_type,
@@ -1107,6 +1120,7 @@ private:
             .g_texture           = std::move(g_texture),
             .eta                 = eta,
             .eta_texture         = std::move(eta_texture),
+            .eta_spectrum        = std::move(eta_spectrum),
             .remap_roughness     = one_bool(params, "remaproughness", command, true),
             .max_depth           = one_uint(params, "maxdepth", command, 10u),
             .samples             = one_uint(params, "nsamples", command, 1u),

@@ -689,4 +689,21 @@ Bool all(const SampledSpectrum& v) noexcept
     });
 }
 
+void SampledWavelengths::terminate_secondary() const noexcept
+{
+    compute::outline([&]
+    {
+        auto terminated = def(true);
+        for (auto i = 1u; i < dimension(); i++)
+        {
+            terminated &= m_pdfs[i] == 0.0f;
+            m_pdfs[i] = 0.0f;
+        }
+        $if(!terminated)
+        {
+            m_pdfs[0u] *= 1.0f / static_cast<float>(dimension());
+        };
+    });
+}
+
 } // namespace Yutrel

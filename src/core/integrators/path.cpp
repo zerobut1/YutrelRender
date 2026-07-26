@@ -119,6 +119,10 @@ Float3 PathIntegrator::Instance::Li(const Camera::Instance* camera, Expr<uint> f
             });
             call.execute([&](const Surface::Closure* closure) noexcept
             {
+                if (auto dispersive = closure->is_dispersive())
+                {
+                    $if(*dispersive) { swl.terminate_secondary(); };
+                }
                 $if(light_sample.eval.pdf > 0.0f & !occluded)
                 {
                     auto wi   = light_sample.shadow_ray->direction();

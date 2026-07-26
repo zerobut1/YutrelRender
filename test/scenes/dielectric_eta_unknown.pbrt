@@ -1,0 +1,4 @@
+WorldBegin
+Material "dielectric"
+    "spectrum eta" [ "glass-BK7" ]
+Shape "sphere"

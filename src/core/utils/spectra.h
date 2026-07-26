@@ -339,6 +339,7 @@ public:
     void set_lambda(Expr<uint> i, Expr<float> lambda) noexcept { m_lambdas[i] = lambda; }
     void set_pdf(Expr<uint> i, Expr<float> pdf) noexcept { m_pdfs[i] = pdf; }
     [[nodiscard]] auto dimension() const noexcept { return static_cast<uint>(m_lambdas.size()); }
+    void terminate_secondary() const noexcept;
 };
 
 } // namespace Yutrel

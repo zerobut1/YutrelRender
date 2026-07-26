@@ -406,6 +406,30 @@ static auto test_pbrt_parse_registration = []
         expect(named_material.remap_roughness);
     };
 
+    "parse_dielectric_f11"_test = []
+    {
+        auto scene = PbrtParser::parse("test/scenes/dielectric_f11.pbrt");
+        expect(scene.materials.size() == 2u);
+        expect(scene.named_materials.size() == 1u);
+
+        auto&& named = scene.named_materials.at("f11-named");
+        expect(named.type == MaterialDesc::Type::Dielectric);
+        expect(named.eta_spectrum == luisa::optional<luisa::string>{"glass-F11"});
+        expect(!named.eta_texture.has_value());
+
+        expect(scene.materials[0u].eta_spectrum ==
+               luisa::optional<luisa::string>{"glass-F11"});
+        expect(!scene.materials[1u].eta_spectrum.has_value());
+        expect(is_near(scene.materials[1u].eta, 1.5f));
+    };
+
+    "reject_conflicting_dielectric_eta"_test = []
+    {
+        expect(parse_error_contains(
+            "test/scenes/dielectric_eta_conflict.pbrt",
+            {"dielectric_eta_conflict.pbrt", "eta", "spectrum", "float"}));
+    };
+
     "parse_homogeneous_medium_and_interfaces"_test = []
     {
         auto scene = PbrtParser::parse("test/scenes/homogeneous_medium.pbrt");

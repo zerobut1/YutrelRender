@@ -53,6 +53,7 @@ const Surface* CoatedDiffuseSurfaceSpec::build(SceneBuilder& builder) const noex
     auto coat = builder.emplace<Surface, Dielectric>(
         resolve(m_params.roughness), resolve(m_params.u_roughness),
         resolve(m_params.v_roughness), resolve(m_params.eta),
+        luisa::nullopt,
         m_params.remap_roughness, false);
     auto substrate = builder.emplace<Surface, Diffuse>(reflectance, false);
     return builder.emplace<Surface, Layered>(

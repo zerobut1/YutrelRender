@@ -1,5 +1,9 @@
 #include "dielectric.h"
 
+#include <algorithm>
+#include <array>
+#include <cmath>
+
 #include <luisa/dsl/sugar.h>
 
 #include "base/renderer.h"
@@ -8,6 +12,54 @@
 
 namespace Yutrel
 {
+CauchyEta CauchyEta::fit(float3 wavelengths_nm, float3 eta) noexcept
+{
+    std::array wavelengths{wavelengths_nm.x, wavelengths_nm.y, wavelengths_nm.z};
+    std::array indices{eta.x, eta.y, eta.z};
+    std::array<std::array<double, 4u>, 3u> m{};
+    for (auto row = 0u; row < 3u; row++)
+    {
+        auto inv_l2 = 1.0 / (static_cast<double>(wavelengths[row]) * wavelengths[row]);
+        m[row] = {1.0, inv_l2, inv_l2 * inv_l2, static_cast<double>(indices[row])};
+    }
+    for (auto column = 0u; column < 3u; column++)
+    {
+        auto pivot = column;
+        for (auto row = column + 1u; row < 3u; row++)
+        {
+            if (std::abs(m[row][column]) > std::abs(m[pivot][column])) { pivot = row; }
+        }
+        LUISA_ASSERT(std::abs(m[pivot][column]) > 1e-30, "Degenerate Cauchy eta fit.");
+        if (pivot != column) { std::swap(m[pivot], m[column]); }
+        auto scale = m[column][column];
+        for (auto j = column; j < 4u; j++) { m[column][j] /= scale; }
+        for (auto row = 0u; row < 3u; row++)
+        {
+            if (row == column) { continue; }
+            auto factor = m[row][column];
+            for (auto j = column; j < 4u; j++) { m[row][j] -= factor * m[column][j]; }
+        }
+    }
+    return CauchyEta{.coefficients = make_float3(
+                         static_cast<float>(m[0u][3u]),
+                         static_cast<float>(m[1u][3u]),
+                         static_cast<float>(m[2u][3u]))};
+}
+
+Float CauchyEta::evaluate(Expr<float> lambda_nm) const noexcept
+{
+    auto inv_l2 = sqr(1.0f / lambda_nm);
+    return coefficients.x + coefficients.y * inv_l2 + coefficients.z * sqr(inv_l2);
+}
+
+const CauchyEta& glass_f11_cauchy_eta() noexcept
+{
+    static const auto eta = CauchyEta::fit(
+        make_float3(656.27f, 587.56f, 486.13f),
+        make_float3(1.7754589288508518f, 1.7842240428294434f, 1.8065917880168352f));
+    return eta;
+}
+
 class Dielectric::Closure::Impl
 {
 private:
@@ -183,9 +235,11 @@ public:
 
 Dielectric::Dielectric(const Texture* roughness, const Texture* u_roughness,
                        const Texture* v_roughness, const Texture* eta,
+                       luisa::optional<CauchyEta> cauchy_eta,
                        bool remap_roughness, bool two_sided) noexcept
     : Surface{two_sided}, m_roughness{roughness}, m_u_roughness{u_roughness},
-      m_v_roughness{v_roughness}, m_eta{eta}, m_remap_roughness{remap_roughness} {}
+      m_v_roughness{v_roughness}, m_eta{eta}, m_cauchy_eta{std::move(cauchy_eta)},
+      m_remap_roughness{remap_roughness} {}
 
 luisa::unique_ptr<Surface::Instance> Dielectric::build(
     Renderer& renderer, CommandBuffer& command_buffer) const noexcept
@@ -226,10 +280,21 @@ void Dielectric::Instance::populate_closure(Surface::Closure* closure,
     {
         alpha = TrowbridgeReitzDistribution::roughness_to_alpha(alpha);
     }
-    auto eta_t = m_eta ? m_eta->evaluate(it, time).x : Float{1.5f};
+    auto eta_t = def(1.5f);
+    auto dispersive = def(false);
+    if (auto&& cauchy_eta = base<Dielectric>()->cauchy_eta())
+    {
+        eta_t = cauchy_eta->evaluate(closure->swl().lambda(0u));
+        dispersive = true;
+    }
+    else if (m_eta)
+    {
+        eta_t = m_eta->evaluate(it, time).x;
+    }
     eta_t = ite(eta_t == 0.0f, 1.0f, eta_t);
     closure->bind(Closure::Context{.it = it, .alpha = alpha,
-                                   .eta_i = eta_i, .eta_t = eta_t});
+                                   .eta_i = eta_i, .eta_t = eta_t,
+                                   .dispersive = dispersive});
 }
 
 Dielectric::Closure::Closure(const Renderer& renderer, const SampledWavelengths& swl,
@@ -279,6 +344,15 @@ Surface::Evaluation Dielectric::Closure::evaluate_impl(Expr<float3> wo, Expr<flo
                             ctx.it.shading.world_to_local(wi), mode, flags);
 }
 
+luisa::optional<luisa::string> DielectricSurfaceSpec::validate() const noexcept
+{
+    if (m_params.eta && m_params.cauchy_eta)
+    {
+        return spec_validation_error("Dielectric eta texture and Cauchy eta are mutually exclusive.");
+    }
+    return luisa::nullopt;
+}
+
 void DielectricSurfaceSpec::visit_dependencies(SpecDependencyVisitor& visitor) const noexcept
 {
     auto visit = [&visitor](const luisa::optional<TextureRef>& ref) noexcept
@@ -300,6 +374,7 @@ const Surface* DielectricSurfaceSpec::build(SceneBuilder& builder) const noexcep
     return builder.emplace<Surface, Dielectric>(
         resolve(m_params.roughness), resolve(m_params.u_roughness),
         resolve(m_params.v_roughness), resolve(m_params.eta),
+        m_params.cauchy_eta,
         m_params.remap_roughness, m_params.two_sided);
 }
 } // namespace Yutrel

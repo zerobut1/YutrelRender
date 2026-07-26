@@ -423,6 +423,10 @@ Float3 VolPathIntegrator::Instance::Li(const Camera::Instance* camera, Expr<uint
             });
             call.execute([&](const Surface::Closure* closure) noexcept
             {
+                if (auto dispersive = closure->is_dispersive())
+                {
+                    $if(*dispersive) { swl.terminate_secondary(); };
+                }
                 auto lobe_flags = closure->lobe_flags();
                 auto non_specular =
                     (lobe_flags & (Surface::lobe_diffuse | Surface::lobe_glossy)) != 0u;

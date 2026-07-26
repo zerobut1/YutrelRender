@@ -269,6 +269,7 @@ void validate_material(const MaterialDesc& material, luisa::string_view owner, b
         ParameterKey{"texture", "vroughness"},
         ParameterKey{"float", "eta"},
         ParameterKey{"texture", "eta"},
+        ParameterKey{"spectrum", "eta"},
         ParameterKey{"bool", "remaproughness"},
     };
     static constexpr std::array dielectric_named_allowed{
@@ -281,6 +282,7 @@ void validate_material(const MaterialDesc& material, luisa::string_view owner, b
         ParameterKey{"texture", "vroughness"},
         ParameterKey{"float", "eta"},
         ParameterKey{"texture", "eta"},
+        ParameterKey{"spectrum", "eta"},
         ParameterKey{"bool", "remaproughness"},
     };
     static constexpr std::array interface_named_allowed{ParameterKey{"string", "type"}};
@@ -1059,11 +1061,28 @@ SceneSpec PbrtImporter::import(PbrtScene scene)
 
         if (material.type == MaterialDesc::Type::Dielectric)
         {
+            luisa::optional<TextureRef> eta;
+            luisa::optional<CauchyEta> cauchy_eta;
+            if (material.eta_spectrum)
+            {
+                if (*material.eta_spectrum != "glass-F11")
+                {
+                    fail(material.source, luisa::format(
+                                              "Unsupported PBRT dielectric eta spectrum '{}'; only 'glass-F11' is supported.",
+                                              *material.eta_spectrum));
+                }
+                cauchy_eta.emplace(glass_f11_cauchy_eta());
+            }
+            else
+            {
+                eta.emplace(resolve_texture("eta", make_float4(material.eta), material.eta_texture));
+            }
             DielectricSurfaceParams params{
                 .roughness       = luisa::nullopt,
                 .u_roughness     = resolve_texture("uroughness", make_float4(material.u_roughness), material.u_roughness_texture),
                 .v_roughness     = resolve_texture("vroughness", make_float4(material.v_roughness), material.v_roughness_texture),
-                .eta             = resolve_texture("eta", make_float4(material.eta), material.eta_texture),
+                .eta             = eta,
+                .cauchy_eta      = cauchy_eta,
                 .remap_roughness = material.remap_roughness,
                 .two_sided       = false,
             };

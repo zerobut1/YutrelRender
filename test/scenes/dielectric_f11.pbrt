@@ -1,0 +1,33 @@
+Integrator "path"
+PixelFilter "triangle"
+Sampler "independent"
+    "integer pixelsamples" [ 1 ]
+Film "rgb"
+    "integer xresolution" [ 16 ]
+    "integer yresolution" [ 16 ]
+Camera "perspective"
+
+WorldBegin
+
+MakeNamedMaterial "f11-named"
+    "string type" [ "dielectric" ]
+    "spectrum eta" [ "glass-F11" ]
+
+AttributeBegin
+    NamedMaterial "f11-named"
+    Shape "sphere"
+AttributeEnd
+
+AttributeBegin
+    Material "dielectric"
+        "spectrum eta" [ "glass-F11" ]
+    Translate 3 0 0
+    Shape "sphere"
+AttributeEnd
+
+AttributeBegin
+    Material "dielectric"
+        "float eta" [ 1.5 ]
+    Translate -3 0 0
+    Shape "sphere"
+AttributeEnd

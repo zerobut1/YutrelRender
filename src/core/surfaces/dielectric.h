@@ -12,12 +12,23 @@ namespace Yutrel
 {
 class Texture;
 
+struct CauchyEta
+{
+    float3 coefficients;
+
+    [[nodiscard]] Float evaluate(Expr<float> lambda_nm) const noexcept;
+    [[nodiscard]] static CauchyEta fit(float3 wavelengths_nm, float3 eta) noexcept;
+};
+
+[[nodiscard]] const CauchyEta& glass_f11_cauchy_eta() noexcept;
+
 struct DielectricSurfaceParams
 {
     luisa::optional<TextureRef> roughness;
     luisa::optional<TextureRef> u_roughness;
     luisa::optional<TextureRef> v_roughness;
     luisa::optional<TextureRef> eta;
+    luisa::optional<CauchyEta> cauchy_eta;
     bool remap_roughness{true};
     bool two_sided{false};
 };
@@ -33,14 +44,17 @@ private:
     const Texture* m_u_roughness;
     const Texture* m_v_roughness;
     const Texture* m_eta;
+    luisa::optional<CauchyEta> m_cauchy_eta;
     bool m_remap_roughness;
 
 public:
     Dielectric(const Texture* roughness, const Texture* u_roughness,
                const Texture* v_roughness, const Texture* eta,
+               luisa::optional<CauchyEta> cauchy_eta,
                bool remap_roughness, bool two_sided) noexcept;
 
     [[nodiscard]] bool remap_roughness() const noexcept { return m_remap_roughness; }
+    [[nodiscard]] const luisa::optional<CauchyEta>& cauchy_eta() const noexcept { return m_cauchy_eta; }
     [[nodiscard]] uint properties() const noexcept override
     {
         return property_reflective | property_transmissive;
@@ -80,6 +94,7 @@ public:
         Float2 alpha;
         Float eta_i;
         Float eta_t;
+        Bool dispersive;
     };
 
 private:
@@ -93,6 +108,7 @@ public:
     [[nodiscard]] const Interaction& it() const noexcept override { return context<Context>().it; }
     [[nodiscard]] UInt lobe_flags() const noexcept override;
     [[nodiscard]] luisa::optional<Float> eta() const noexcept override { return context<Context>().eta_t; }
+    [[nodiscard]] luisa::optional<Bool> is_dispersive() const noexcept override { return context<Context>().dispersive; }
     void pre_eval() noexcept override;
     void post_eval() noexcept override;
 
@@ -114,6 +130,8 @@ public:
     explicit DielectricSurfaceSpec(DielectricSurfaceParams params) noexcept
         : m_params{std::move(params)} {}
 
+    [[nodiscard]] const DielectricSurfaceParams& params() const noexcept { return m_params; }
+    [[nodiscard]] luisa::optional<luisa::string> validate() const noexcept override;
     void visit_dependencies(SpecDependencyVisitor& visitor) const noexcept override;
     [[nodiscard]] const Surface* build(SceneBuilder& builder) const noexcept override;
 };

@@ -36,7 +36,8 @@ int main(int argc, char* argv[])
         {
             auto top = luisa::make_unique<Dielectric::Closure>(renderer, swl, 0.0f);
             top->bind(Dielectric::Closure::Context{
-                .it = layer_it, .alpha = alpha, .eta_i = eta_i, .eta_t = eta_t});
+                .it = layer_it, .alpha = alpha, .eta_i = eta_i, .eta_t = eta_t,
+                .dispersive = false});
             auto bottom = luisa::make_unique<Diffuse::Closure>(renderer, swl, 0.0f);
             bottom->bind(Diffuse::Closure::Context{
                 .it = layer_it, .reflectance = SampledSpectrum{1u, reflectance}});
@@ -85,7 +86,8 @@ int main(int argc, char* argv[])
 
         Dielectric::Closure smooth{renderer, swl, 0.0f};
         smooth.bind(Dielectric::Closure::Context{
-            .it = it, .alpha = make_float2(0.0f), .eta_i = 1.0f, .eta_t = 1.5f});
+            .it = it, .alpha = make_float2(0.0f), .eta_i = 1.0f, .eta_t = 1.5f,
+            .dispersive = false});
         smooth.pre_eval();
         auto normal = make_float3(0.0f, 0.0f, 1.0f);
         auto reflected = smooth.sample(normal, 0.5f, make_float2(0.5f),
@@ -100,7 +102,8 @@ int main(int argc, char* argv[])
 
         Dielectric::Closure tir{renderer, swl, 0.0f};
         tir.bind(Dielectric::Closure::Context{
-            .it = it, .alpha = make_float2(0.0f), .eta_i = 1.5f, .eta_t = 1.0f});
+            .it = it, .alpha = make_float2(0.0f), .eta_i = 1.5f, .eta_t = 1.0f,
+            .dispersive = false});
         tir.pre_eval();
         auto tir_wo = normalize(make_float3(0.9f, 0.0f, 0.4358899f));
         auto tir_sample = tir.sample(tir_wo, 0.5f, make_float2(0.5f),
@@ -136,10 +139,12 @@ int main(int argc, char* argv[])
 
         auto top = luisa::make_unique<Dielectric::Closure>(renderer, swl, 0.0f);
         top->bind(Dielectric::Closure::Context{
-            .it = it, .alpha = make_float2(0.2f), .eta_i = 1.0f, .eta_t = 1.3f});
+            .it = it, .alpha = make_float2(0.2f), .eta_i = 1.0f, .eta_t = 1.3f,
+            .dispersive = false});
         auto bottom = luisa::make_unique<Dielectric::Closure>(renderer, swl, 0.0f);
         bottom->bind(Dielectric::Closure::Context{
-            .it = it, .alpha = make_float2(0.2f), .eta_i = 1.3f, .eta_t = 1.0f});
+            .it = it, .alpha = make_float2(0.2f), .eta_i = 1.3f, .eta_t = 1.0f,
+            .dispersive = false});
         luisa::unique_ptr<Surface::Closure> top_base{std::move(top)};
         luisa::unique_ptr<Surface::Closure> bottom_base{std::move(bottom)};
         Layered::Closure transmissive{renderer, swl, 0.0f,
@@ -160,7 +165,8 @@ int main(int argc, char* argv[])
 
         Dielectric::Closure rough_tir{renderer, swl, 0.0f};
         rough_tir.bind(Dielectric::Closure::Context{
-            .it = it, .alpha = make_float2(0.001f), .eta_i = 1.0f, .eta_t = 1.5f});
+            .it = it, .alpha = make_float2(0.001f), .eta_i = 1.0f, .eta_t = 1.5f,
+            .dispersive = false});
         rough_tir.pre_eval();
         auto internal_wo = -normalize(make_float3(0.9f, 0.0f, 0.4358899f));
         auto internal_sample = rough_tir.sample(

@@ -18,6 +18,7 @@
 #include "shapes/mesh.h"
 #include "shapes/sphere.h"
 #include "surfaces/coated_diffuse.h"
+#include "surfaces/dielectric.h"
 #include "surfaces/diffuse.h"
 #include "surfaces/null.h"
 #include "surfaces/opacity.h"
@@ -816,6 +817,50 @@ static auto test_pbrt_import_registration = []
         auto zero_samples    = CoatedDiffuseSurfaceParams{};
         zero_samples.samples = 0u;
         expect(CoatedDiffuseSurfaceSpec{std::move(zero_samples)}.validate().has_value());
+    };
+
+    "import_dielectric_f11"_test = []
+    {
+        auto parsed = PbrtParser::parse("test/scenes/dielectric_f11.pbrt");
+        auto spec   = PbrtImporter::import(std::move(parsed));
+        auto f11_count = 0u;
+        auto scalar_count = 0u;
+        spec.surfaces().visit_entries([&](SurfaceRef, const SpecMeta&, const SurfaceSpec* surface)
+        {
+            if (auto dielectric = dynamic_cast<const DielectricSurfaceSpec*>(surface))
+            {
+                if (dielectric->params().cauchy_eta)
+                {
+                    expect(!dielectric->params().eta.has_value());
+                    f11_count++;
+                }
+                else
+                {
+                    expect(dielectric->params().eta.has_value());
+                    scalar_count++;
+                }
+            }
+        });
+        expect(f11_count == 2u);
+        expect(scalar_count == 1u);
+    };
+
+    "reject_unknown_dielectric_eta_spectrum"_test = []
+    {
+        auto parsed = PbrtParser::parse("test/scenes/dielectric_eta_unknown.pbrt");
+        auto rejected = false;
+        try
+        {
+            (void)PbrtImporter::import(std::move(parsed));
+        }
+        catch (const std::runtime_error& error)
+        {
+            auto message = std::string{error.what()};
+            rejected = message.find("dielectric_eta_unknown.pbrt") != std::string::npos &&
+                       message.find("glass-BK7") != std::string::npos &&
+                       message.find("glass-F11") != std::string::npos;
+        }
+        expect(rejected);
     };
 
     "generate_sphere_geometry"_test = []

@@ -1,0 +1,5 @@
+WorldBegin
+Material "dielectric"
+    "float eta" [ 1.5 ]
+    "spectrum eta" [ "glass-F11" ]
+Shape "sphere"

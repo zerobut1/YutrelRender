@@ -112,6 +112,47 @@ namespace
     return true;
 }
 
+[[nodiscard]] bool test_terminate_secondary(Device& device, Stream& stream)
+{
+    Kernel1D kernel = [](BufferFloat4 output) noexcept
+    {
+        SampledWavelengths swl{4u};
+        swl.set_pdf(0u, 0.4f);
+        swl.set_pdf(1u, 0.3f);
+        swl.set_pdf(2u, 0.2f);
+        swl.set_pdf(3u, 0.1f);
+        swl.terminate_secondary();
+        output.write(0u, make_float4(swl.pdf(0u), swl.pdf(1u), swl.pdf(2u), swl.pdf(3u)));
+        swl.terminate_secondary();
+        output.write(1u, make_float4(swl.pdf(0u), swl.pdf(1u), swl.pdf(2u), swl.pdf(3u)));
+
+        SampledWavelengths single{1u};
+        single.set_pdf(0u, 0.25f);
+        single.terminate_secondary();
+        output.write(2u, make_float4(single.pdf(0u)));
+    };
+    auto shader = device.compile(kernel);
+    auto output = device.create_buffer<float4>(3u);
+    std::array<float4, 3u> result{};
+    stream << shader(output).dispatch(1u)
+           << output.copy_to(luisa::span{result})
+           << synchronize();
+
+    auto terminated = [](float4 value) noexcept
+    {
+        return value.x == 0.1f && value.y == 0.0f &&
+               value.z == 0.0f && value.w == 0.0f;
+    };
+    if (!terminated(result[0u]) || !terminated(result[1u]) || result[2u].x != 0.25f)
+    {
+        std::cerr << "terminate_secondary mismatch: first.x=" << result[0u].x
+                  << ", second.x=" << result[1u].x
+                  << ", single.x=" << result[2u].x << '\n';
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 int main(int argc, char* argv[])
@@ -123,5 +164,8 @@ int main(int argc, char* argv[])
     Context context{argv[0]};
     auto device = context.create_device(argv[1]);
     auto stream = device.create_stream();
-    return test_visible_wavelength_sampling(device, stream) ? 0 : 1;
+    return test_visible_wavelength_sampling(device, stream) &&
+                   test_terminate_secondary(device, stream)
+               ? 0
+               : 1;
 }
