@@ -375,6 +375,7 @@ void validate_pbrt_scene(const PbrtScene& scene)
         ParameterKey{"integer", "xresolution"},
         ParameterKey{"integer", "yresolution"},
         ParameterKey{"float", "iso"},
+        ParameterKey{"float", "maxcomponentvalue"},
         ParameterKey{"string", "filename"},
     };
     validate_parameters(scene.film.parameters, "Film 'rgb'", film_allowed);
@@ -1337,6 +1338,10 @@ SceneSpec PbrtImporter::import(PbrtScene scene)
     {
         fail("PBRT Film ISO must be finite and positive.");
     }
+    if (std::isnan(scene.film.max_component_value) || scene.film.max_component_value <= 0.0f)
+    {
+        fail("PBRT Film maxcomponentvalue must be positive or infinity.");
+    }
     auto imaging_ratio = exposure_time * scene.film.iso / 100.0f;
     if (!std::isfinite(imaging_ratio))
     {
@@ -1355,7 +1360,8 @@ SceneSpec PbrtImporter::import(PbrtScene scene)
         scene.film.resolution,
         false,
         filename,
-        imaging_ratio);
+        imaging_ratio,
+        scene.film.max_component_value);
     if (std::abs(scene.filter.radius.x - scene.filter.radius.y) > 1e-6f)
     {
         fail("PBRT pixel filter expects equal x/y radii for now.");

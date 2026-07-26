@@ -65,11 +65,13 @@ static auto test_pbrt_parse_registration = []
     {
         auto scene = PbrtParser::parse("test/scenes/film_exposure.pbrt");
         expect(is_near(scene.film.iso, 200.0f));
+        expect(is_near(scene.film.max_component_value, 10.0f));
         expect(is_near(scene.camera.shutter_open, 0.25f));
         expect(is_near(scene.camera.shutter_close, 0.75f));
 
         auto defaults = PbrtParser::parse("test/scenes/import_geometry.pbrt");
         expect(is_near(defaults.film.iso, 100.0f));
+        expect(std::isinf(defaults.film.max_component_value));
         expect(is_near(defaults.camera.shutter_open, 0.0f));
         expect(is_near(defaults.camera.shutter_close, 1.0f));
     };

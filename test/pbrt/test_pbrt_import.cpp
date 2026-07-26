@@ -136,15 +136,43 @@ static auto test_pbrt_import_registration = []
         expect(RGBFilmSpec{make_uint2(16u), false, "render.exr", -1.0f}.validate().has_value());
         expect(RGBFilmSpec{make_uint2(16u), false, "render.exr", std::numeric_limits<float>::infinity()}.validate().has_value());
         expect(RGBFilmSpec{make_uint2(16u), false, "render.exr", std::numeric_limits<float>::quiet_NaN()}.validate().has_value());
+        expect(!RGBFilmSpec{make_uint2(16u), false, "render.exr", 1.0f, 10.0f}.validate().has_value());
+        expect(!RGBFilmSpec{make_uint2(16u), false, "render.exr", 1.0f, std::numeric_limits<float>::infinity()}.validate().has_value());
+        expect(RGBFilmSpec{make_uint2(16u), false, "render.exr", 1.0f, 0.0f}.validate().has_value());
+        expect(RGBFilmSpec{make_uint2(16u), false, "render.exr", 1.0f, -1.0f}.validate().has_value());
+        expect(RGBFilmSpec{make_uint2(16u), false, "render.exr", 1.0f, std::numeric_limits<float>::quiet_NaN()}.validate().has_value());
+    };
+
+    "import_rejects_invalid_film_max_component"_test = []
+    {
+        for (auto value : std::array{
+                 0.0f,
+                 -1.0f,
+                 std::numeric_limits<float>::quiet_NaN()})
+        {
+            auto parsed                     = PbrtParser::parse("test/scenes/import_geometry.pbrt");
+            parsed.film.max_component_value = value;
+            auto rejected                   = false;
+            try
+            {
+                (void)PbrtImporter::import(std::move(parsed));
+            }
+            catch (const std::runtime_error& error)
+            {
+                rejected = std::string_view{error.what()}.find("maxcomponentvalue") != std::string_view::npos;
+            }
+            expect(rejected);
+        }
     };
 
     "import_film_exposure"_test = []
     {
-        auto parsed                 = PbrtParser::parse("test/scenes/import_geometry.pbrt");
-        parsed.film.iso             = 200.0f;
-        parsed.camera.shutter_open  = 0.25f;
-        parsed.camera.shutter_close = 0.75f;
-        auto spec                   = PbrtImporter::import(std::move(parsed));
+        auto parsed                     = PbrtParser::parse("test/scenes/import_geometry.pbrt");
+        parsed.film.iso                 = 200.0f;
+        parsed.film.max_component_value = 10.0f;
+        parsed.camera.shutter_open      = 0.25f;
+        parsed.camera.shutter_close     = 0.75f;
+        auto spec                       = PbrtImporter::import(std::move(parsed));
 
         auto film   = dynamic_cast<const RGBFilmSpec*>(&spec.films().spec(spec.render().film));
         auto camera = dynamic_cast<const PinholeCameraSpec*>(&spec.cameras().spec(spec.render().camera));
@@ -153,6 +181,7 @@ static auto test_pbrt_import_registration = []
         if (film != nullptr && camera != nullptr)
         {
             expect(is_near(film->imaging_ratio(), 1.0f));
+            expect(is_near(film->max_component_value(), 10.0f));
             expect(is_near(camera->shutter_span().x, 0.25f));
             expect(is_near(camera->shutter_span().y, 0.75f));
         }
@@ -166,6 +195,7 @@ static auto test_pbrt_import_registration = []
         if (default_film != nullptr && default_camera != nullptr)
         {
             expect(is_near(default_film->imaging_ratio(), 1.0f));
+            expect(std::isinf(default_film->max_component_value()));
             expect(is_near(default_camera->shutter_span().x, 0.0f));
             expect(is_near(default_camera->shutter_span().y, 1.0f));
         }

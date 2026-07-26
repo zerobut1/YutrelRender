@@ -92,9 +92,12 @@ private:
     bool m_display_hdr{false};
     std::filesystem::path m_filename{"render.exr"};
     float m_imaging_ratio{1.0f};
+    float m_max_component_value{std::numeric_limits<float>::infinity()};
 
 public:
-    Film(uint2 resolution, bool display_hdr, std::filesystem::path filename, float imaging_ratio) noexcept;
+    Film(uint2 resolution, bool display_hdr, std::filesystem::path filename,
+         float imaging_ratio = 1.0f,
+         float max_component_value = std::numeric_limits<float>::infinity()) noexcept;
     ~Film() noexcept;
 
     Film()                       = delete;
@@ -113,6 +116,7 @@ public:
     [[nodiscard]] auto display_hdr() const noexcept { return m_display_hdr; }
     [[nodiscard]] const auto& filename() const noexcept { return m_filename; }
     [[nodiscard]] auto imaging_ratio() const noexcept { return m_imaging_ratio; }
+    [[nodiscard]] auto max_component_value() const noexcept { return m_max_component_value; }
 };
 
 class RGBFilmSpec final : public FilmSpec
@@ -122,10 +126,14 @@ private:
     bool _display_hdr;
     std::filesystem::path _filename;
     float _imaging_ratio;
+    float _max_component_value;
 
 public:
-    RGBFilmSpec(uint2 resolution, bool display_hdr, std::filesystem::path filename, float imaging_ratio = 1.0f) noexcept
-        : _resolution{resolution}, _display_hdr{display_hdr}, _filename{std::move(filename)}, _imaging_ratio{imaging_ratio} {}
+    RGBFilmSpec(uint2 resolution, bool display_hdr, std::filesystem::path filename,
+                float imaging_ratio = 1.0f,
+                float max_component_value = std::numeric_limits<float>::infinity()) noexcept
+        : _resolution{resolution}, _display_hdr{display_hdr}, _filename{std::move(filename)},
+          _imaging_ratio{imaging_ratio}, _max_component_value{max_component_value} {}
 
     [[nodiscard]] luisa::optional<luisa::string> validate() const noexcept override
     {
@@ -154,9 +162,14 @@ public:
         {
             return spec_validation_error("Film imaging ratio must be finite and positive.");
         }
+        if (std::isnan(_max_component_value) || _max_component_value <= 0.0f)
+        {
+            return spec_validation_error("Film maximum component value must be positive or infinity.");
+        }
         return luisa::nullopt;
     }
     [[nodiscard]] auto imaging_ratio() const noexcept { return _imaging_ratio; }
+    [[nodiscard]] auto max_component_value() const noexcept { return _max_component_value; }
     [[nodiscard]] const Film* build(SceneBuilder& builder) const noexcept override;
 };
 } // namespace Yutrel

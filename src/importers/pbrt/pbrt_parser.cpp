@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 
@@ -994,7 +995,9 @@ private:
         m_desc.film.type       = FilmDesc::Type::RGB;
         m_desc.film.resolution = make_uint2(one_uint(params, "xresolution", command, 1280u),
                                             one_uint(params, "yresolution", command, 720u));
-        m_desc.film.iso        = one_float(params, "iso", command, 100.0f);
+        m_desc.film.iso                 = one_float(params, "iso", command, 100.0f);
+        m_desc.film.max_component_value = one_float(
+            params, "maxcomponentvalue", command, std::numeric_limits<float>::infinity());
         auto filename          = one_string(params, "filename", command, "pbrt.exr");
         if (!filename.empty())
         {

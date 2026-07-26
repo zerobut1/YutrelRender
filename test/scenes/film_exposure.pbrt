@@ -1,6 +1,7 @@
 Film "rgb"
     "string filename" [ "film-exposure.exr" ]
     "float iso" [ 200 ]
+    "float maxcomponentvalue" [ 10 ]
 Camera "perspective"
     "float shutteropen" [ 0.25 ]
     "float shutterclose" [ 0.75 ]

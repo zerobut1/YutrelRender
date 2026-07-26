@@ -7,15 +7,18 @@
 
 namespace Yutrel
 {
-Film::Film(uint2 resolution, bool display_hdr, std::filesystem::path filename, float imaging_ratio) noexcept
+Film::Film(uint2 resolution, bool display_hdr, std::filesystem::path filename,
+           float imaging_ratio, float max_component_value) noexcept
     : m_resolution{resolution},
       m_display_hdr{display_hdr},
       m_filename{std::move(filename)},
-      m_imaging_ratio{imaging_ratio} {}
+      m_imaging_ratio{imaging_ratio},
+      m_max_component_value{max_component_value} {}
 
 const Film* RGBFilmSpec::build(SceneBuilder& builder) const noexcept
 {
-    return builder.emplace<Film, Film>(_resolution, _display_hdr, _filename, _imaging_ratio);
+    return builder.emplace<Film, Film>(
+        _resolution, _display_hdr, _filename, _imaging_ratio, _max_component_value);
 }
 
 Film::~Film() noexcept = default;
@@ -31,6 +34,14 @@ Float4 Film::Instance::filtered_contribution(Expr<float3> rgb, Expr<float> effec
     renderer().record_film_non_finite(has_nan, has_inf);
     $if(!(has_nan | has_inf))
     {
+        if (std::isfinite(base()->max_component_value()))
+        {
+            auto max_component = max(exposed_rgb.x, max(exposed_rgb.y, exposed_rgb.z));
+            $if(max_component > base()->max_component_value())
+            {
+                exposed_rgb *= base()->max_component_value() / max_component;
+            };
+        }
         contribution = make_float4(exposed_rgb, effective_spp);
     };
     return contribution;

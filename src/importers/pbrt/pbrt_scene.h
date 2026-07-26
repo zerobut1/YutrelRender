@@ -2,6 +2,7 @@
 
 #include <array>
 #include <filesystem>
+#include <limits>
 
 #include <luisa/core/basic_types.h>
 #include <luisa/core/stl.h>
@@ -59,6 +60,7 @@ struct FilmDesc
     Type type{Type::RGB};
     uint2 resolution{1280u, 720u};
     float iso{100.0f};
+    float max_component_value{std::numeric_limits<float>::infinity()};
     std::filesystem::path filename{"pbrt.exr"};
     luisa::vector<RawParameter> parameters;
 };
