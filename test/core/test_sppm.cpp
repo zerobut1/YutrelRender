@@ -90,25 +90,55 @@ suite sppm_spec_tests = []
         expect(is_near(integrator.initial_radius(), 2.5f));
     };
 
-    "sppm_gamma_radius_shrinkage"_test = []
+    "sppm_per_pixel_radius_shrinkage"_test = []
     {
-        // Verify radius formula: R_k = R_0 * k^{(gamma-1)/2}
+        // The integrator uses PBRT-v4's per-pixel update:
+        //   n' = n + gamma * m
+        //   r' = r * sqrt(n' / (n + m))
+        // A pixel that receives no photons keeps its radius unchanged.
         constexpr float gamma = 2.0f / 3.0f;
-        constexpr float r0    = 1.0f;
-        float r1 = r0 * std::pow(1.0f, (gamma - 1.0f) / 2.0f); // k=1
-        float r10 = r0 * std::pow(10.0f, (gamma - 1.0f) / 2.0f); // k=10
-        float r100 = r0 * std::pow(100.0f, (gamma - 1.0f) / 2.0f); // k=100
 
-        expect(is_near(r1, 1.0f));
-        expect(r10 < r1) << "Radius should shrink with iterations.";
-        expect(r100 < r10) << "Radius should continue shrinking.";
-        expect(r100 > 0.0f) << "Radius should remain positive.";
+        auto next_radius = [](float r, float n, float m) noexcept
+        {
+            if (m <= 0.0f) { return r; }
+            const float n_new = n + gamma * m;
+            return r * std::sqrt(n_new / (n + m));
+        };
 
-        // Specific values: k^{-1/6}
-        // 10^{-1/6} ≈ 0.6813
-        expect(is_near(r10, 0.6813f, 0.01f));
-        // 100^{-1/6} ≈ 0.4642
-        expect(is_near(r100, 0.4642f, 0.01f));
+        // First gather on a fresh pixel: r' = r * sqrt(gamma).
+        const float r1 = next_radius(1.0f, 0.0f, 8.0f);
+        expect(is_near(r1, std::sqrt(gamma), 1e-4f));
+        expect(r1 < 1.0f) << "Radius should shrink after receiving photons.";
+
+        // Radius keeps shrinking monotonically across gathers.
+        const float r2 = next_radius(r1, gamma * 8.0f, 8.0f);
+        expect(r2 < r1) << "Radius should continue shrinking.";
+        expect(r2 > 0.0f) << "Radius should remain positive.";
+
+        // Pixels without photons must be left alone.
+        expect(is_near(next_radius(r2, gamma * 16.0f, 0.0f), r2))
+            << "Radius must not change when no photons are gathered.";
+    };
+
+    "sppm_tau_scaling_matches_radius_ratio"_test = []
+    {
+        // tau is rescaled by (r'/r)^2 so that the density estimate stays
+        // consistent when the gather radius shrinks.
+        constexpr float gamma = 2.0f / 3.0f;
+        const float r         = 0.5f;
+        const float n         = 12.0f;
+        const float m         = 6.0f;
+
+        const float n_new = n + gamma * m;
+        const float r_new = r * std::sqrt(n_new / (n + m));
+        const float scale = (r_new * r_new) / (r * r);
+
+        expect(is_near(scale, n_new / (n + m), 1e-4f));
+        expect(scale < 1.0f) << "tau scale should be below one while the radius shrinks.";
+
+        const float tau = (10.0f + 4.0f) * scale;
+        expect(tau < 14.0f) << "tau should be attenuated by the radius ratio.";
+        expect(tau > 0.0f);
     };
 };
 
