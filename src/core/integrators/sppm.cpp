@@ -35,15 +35,15 @@ SPPMIntegrator::SPPMIntegrator(uint max_depth, uint photons_per_iteration, float
 SPPMIntegrator::Instance::Instance(Renderer& renderer, CommandBuffer& command_buffer, const SPPMIntegrator* integrator, const Sampler* sampler) noexcept
     : Integrator::Instance{renderer, command_buffer, integrator, sampler}
 {
-    // Register light handle buffer for photon emission sampling
-    auto light_instances_span = renderer.geometry()->light_instances();
-    _n_lights                 = static_cast<uint>(light_instances_span.size());
+    // Register finite-light handles for photon emission sampling.
+    auto light_handles = renderer.light_handles();
+    _n_lights          = static_cast<uint>(light_handles.size());
     if (_n_lights > 0u)
     {
         auto [view, buffer_id] = renderer.bindless_arena_buffer<Light::Handle>(_n_lights);
         _light_handle_buffer_id = buffer_id;
         command_buffer
-            << view.copy_from(light_instances_span.data())
+            << view.copy_from(light_handles.data())
             << commit();
     }
 }
@@ -83,7 +83,7 @@ void SPPMIntegrator::Instance::render(Stream& stream, bool enable_display)
 
     if (_n_lights == 0u)
     {
-        LUISA_ERROR_WITH_LOCATION("SPPM requires at least one area light source in the scene.");
+        LUISA_ERROR_WITH_LOCATION("SPPM requires at least one finite light source in the scene.");
     }
 
     LUISA_INFO(
@@ -108,6 +108,27 @@ void SPPMIntegrator::Instance::render(Stream& stream, bool enable_display)
 
     LUISA_INFO("SPPM: photon buffer capacity={}, hash_size={}, grid_cell_size={}.",
                capacity, hash_size, grid_cell_size);
+
+    // The configured sampler controls the stochastic camera pass. Photon
+    // paths use their own sequence below, matching pbrt-v4's separation of
+    // camera and photon samplers.
+    sampler()->reset(command_buffer, resolution, pixel_count);
+
+    // pbrt-v4 uses RadicalInverse(1, iteration), i.e. base 3, so every pass
+    // shares a low-discrepancy wavelength sample.
+    auto pass_wavelength_sample = [](UInt pass_index) noexcept
+    {
+        auto index       = def(pass_index);
+        auto inv_digit   = def(1.0f / 3.0f);
+        auto radical_inv = def(0.0f);
+        $while(index != 0u)
+        {
+            radical_inv += cast<float>(index % 3u) * inv_digit;
+            index = index / 3u;
+            inv_digit *= 1.0f / 3.0f;
+        };
+        return min(radical_inv, one_minus_epsilon);
+    };
 
     // Per-pixel progressive state.
     auto buf_radius   = renderer().create<Buffer<float>>(pixel_count);
@@ -222,7 +243,7 @@ void SPPMIntegrator::Instance::render(Stream& stream, bool enable_display)
 
         // The whole pass shares one set of wavelengths, as in pbrt's `passLambda`.
         auto spectrum_inst = renderer().spectrum();
-        auto u_wl          = cast<float>(xxhash32(make_uint4(iteration, 0x7777u, 0u, 0u))) * (1.0f / 4294967296.0f);
+        auto u_wl          = pass_wavelength_sample(iteration);
         auto swl           = spectrum_inst->sample(spectrum_inst->base()->is_fixed() ? 0.0f : u_wl);
 
         // Uniform light selection; with a single emitter this matches pbrt's
@@ -250,6 +271,13 @@ void SPPMIntegrator::Instance::render(Stream& stream, bool enable_display)
         auto total_pdf = sel_pdf * le_sample.pdf;
         SampledSpectrum beta{swl.dimension()};
         beta = ite(total_pdf > 0.0f, le_sample.Le * le_sample.cos_theta / total_pdf, 0.0f);
+        {
+            auto beta_has_nan = beta.any([](auto v) noexcept { return compute::isnan(v); });
+            auto beta_has_inf = beta.any([](auto v) noexcept { return compute::isinf(v); });
+            auto beta_invalid = beta_has_nan | beta_has_inf;
+            renderer().record_path_non_finite(beta_has_nan, beta_has_inf);
+            beta = beta.map([&](auto v) noexcept { return ite(beta_invalid, 0.0f, v); });
+        }
 
         auto ray        = le_sample.ray;
         auto path_depth = def(0u);
@@ -338,7 +366,11 @@ void SPPMIntegrator::Instance::render(Stream& stream, bool enable_display)
                 });
             };
 
-            beta = zero_if_any_nan(beta);
+            auto beta_has_nan = beta.any([](auto v) noexcept { return compute::isnan(v); });
+            auto beta_has_inf = beta.any([](auto v) noexcept { return compute::isinf(v); });
+            auto beta_invalid = beta_has_nan | beta_has_inf;
+            renderer().record_path_non_finite(beta_has_nan, beta_has_inf);
+            beta = beta.map([&](auto v) noexcept { return ite(beta_invalid, 0.0f, v); });
         };
     };
 
@@ -363,11 +395,10 @@ void SPPMIntegrator::Instance::render(Stream& stream, bool enable_display)
         auto pixel_id  = dispatch_id().xy();
         auto pixel_idx = pixel_id.y * resolution.x + pixel_id.x;
 
-        auto rng    = def(xxhash32(make_uint4(pixel_idx, iteration, 0xCAu, 0u)));
+        sampler()->start(pixel_id, iteration);
         auto next_f = [&]() noexcept -> Float
         {
-            rng = xxhash32(make_uint4(rng, pixel_idx, iteration, 2u));
-            return cast<float>(rng) * (1.0f / 4294967296.0f);
+            return sampler()->generate_1d();
         };
         auto next_f2 = [&]() noexcept -> Float2
         {
@@ -375,7 +406,7 @@ void SPPMIntegrator::Instance::render(Stream& stream, bool enable_display)
         };
 
         auto spectrum_inst = renderer().spectrum();
-        auto u_wl          = cast<float>(xxhash32(make_uint4(iteration, 0x7777u, 0u, 0u))) * (1.0f / 4294967296.0f);
+        auto u_wl          = pass_wavelength_sample(iteration);
         auto swl           = spectrum_inst->sample(spectrum_inst->base()->is_fixed() ? 0.0f : u_wl);
 
         auto u_filter                        = next_f2();
@@ -493,14 +524,18 @@ void SPPMIntegrator::Instance::render(Stream& stream, bool enable_display)
                             {
                                 $for(dz, -1, 2)
                                 {
-                                    auto bucket = bucket_of(cell + make_int3(dx, dy, dz));
+                                    auto query_cell = cell + make_int3(dx, dy, dz);
+                                    auto bucket = bucket_of(query_cell);
                                     auto idx    = grid_head_buf.read(bucket);
                                     $while(idx >= 0)
                                     {
                                         auto uidx     = cast<uint>(idx);
                                         auto p_photon = p_pos.read(uidx).xyz();
                                         auto dist2    = length_squared(p_photon - it->p_g);
-                                        $if(dist2 < radius2)
+                                        // Verify the original cell so hash collisions cannot
+                                        // leak or double-count photons in neighbouring buckets.
+                                        auto same_cell = all(cell_of(p_photon) == query_cell);
+                                        $if(same_cell & (dist2 < radius2))
                                         {
                                             auto wi_data   = p_wi.read(uidx);
                                             auto photon_wi = wi_data.xyz();
@@ -563,7 +598,11 @@ void SPPMIntegrator::Instance::render(Stream& stream, bool enable_display)
 
             $if(gathered) { $break; };
 
-            camera_beta = zero_if_any_nan(camera_beta);
+            auto beta_has_nan = camera_beta.any([](auto v) noexcept { return compute::isnan(v); });
+            auto beta_has_inf = camera_beta.any([](auto v) noexcept { return compute::isinf(v); });
+            auto beta_invalid = beta_has_nan | beta_has_inf;
+            renderer().record_path_non_finite(beta_has_nan, beta_has_inf);
+            camera_beta = camera_beta.map([&](auto v) noexcept { return ite(beta_invalid, 0.0f, v); });
             $if(camera_beta.max() <= 0.0f) { $break; };
 
             auto rr_beta_max = camera_beta.max() * eta_scale;
@@ -574,6 +613,18 @@ void SPPMIntegrator::Instance::render(Stream& stream, bool enable_display)
                 camera_beta /= 1.0f - q;
             };
         };
+
+        auto direct_has_nan = any(compute::isnan(direct));
+        auto direct_has_inf = any(compute::isinf(direct));
+        auto phi_has_nan    = any(compute::isnan(phi_local));
+        auto phi_has_inf    = any(compute::isinf(phi_local));
+        auto direct_invalid = direct_has_nan | direct_has_inf;
+        auto phi_invalid    = phi_has_nan | phi_has_inf;
+        renderer().record_path_non_finite(direct_has_nan | phi_has_nan,
+                                          direct_has_inf | phi_has_inf);
+        direct    = ite(direct_invalid, make_float3(0.0f), direct);
+        phi_local = ite(phi_invalid, make_float3(0.0f), phi_local);
+        M_local   = ite(phi_invalid, 0u, M_local);
 
         auto prev_dr = direct_r_buf.read(pixel_idx);
         auto prev_dg = direct_g_buf.read(pixel_idx);

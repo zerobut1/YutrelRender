@@ -1548,11 +1548,70 @@ private:
     {
         expect_world(command);
         auto type = expect_string("LightSource type");
-        if (type != "infinite" && type != "distant")
+        if (type != "infinite" && type != "distant" && type != "point")
         {
             fail(command, luisa::format("unsupported LightSource '{}'", type));
         }
         auto params = parse_parameters();
+        if (type == "point")
+        {
+            for (auto i = 0u; i < params.size(); i++)
+            {
+                auto&& param   = params[i];
+                auto supported = (param.type == "rgb" && param.name == "I") ||
+                                 (param.type == "float" && param.name == "scale") ||
+                                 (param.type == "point3" && param.name == "from");
+                if (!supported)
+                {
+                    fail(param.source, luisa::format(
+                                           "unsupported parameter '\"{} {}\"' for point LightSource",
+                                           param.type, param.name));
+                }
+                for (auto j = 0u; j < i; j++)
+                {
+                    if (params[j].name == param.name)
+                    {
+                        fail(param.source, luisa::format(
+                                               "duplicate point LightSource parameter '\"{} {}\"'",
+                                               param.type, param.name));
+                    }
+                }
+            }
+            auto I     = one_float3(params, "rgb", "I", make_float3(1.0f));
+            auto scale = one_float(params, "scale", command, 1.0f);
+            auto from  = one_float3(params, "point3", "from", make_float3(0.0f));
+            auto finite = [](float3 v) noexcept
+            {
+                return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+            };
+            if (!finite(I) || I.x < 0.0f || I.y < 0.0f || I.z < 0.0f)
+            {
+                auto p = find_param(params, "rgb", "I");
+                fail(p == nullptr ? command.loc : p->source,
+                     "point LightSource intensity must be finite and non-negative");
+            }
+            if (!std::isfinite(scale) || scale < 0.0f)
+            {
+                auto p = find_param(params, "float", "scale");
+                fail(p == nullptr ? command.loc : p->source,
+                     "point LightSource scale must be finite and non-negative");
+            }
+            if (!finite(from))
+            {
+                auto p = find_param(params, "point3", "from");
+                fail(p == nullptr ? command.loc : p->source,
+                     "point LightSource position must be finite");
+            }
+            m_desc.point_lights.emplace_back(PointLightDesc{
+                .source         = command.loc,
+                .I              = I,
+                .scale          = scale,
+                .from           = from,
+                .pbrt_transform = m_current_transform,
+                .parameters     = std::move(params),
+            });
+            return;
+        }
         if (type == "distant")
         {
             for (auto i = 0u; i < params.size(); i++)

@@ -1,0 +1,22 @@
+Integrator "path" "integer maxdepth" [2]
+Sampler "independent" "integer pixelsamples" [1]
+PixelFilter "triangle" "float xradius" [1] "float yradius" [1]
+Film "rgb" "string filename" ["point_basic.exr"] "integer xresolution" [8] "integer yresolution" [8]
+Camera "perspective" "float fov" [45]
+
+WorldBegin
+AttributeBegin
+    Translate 1 2 3
+    LightSource "point"
+        "rgb I" [2 3 4]
+        "float scale" [2]
+        "point3 from" [1 0 -1]
+AttributeEnd
+Material "diffuse" "rgb reflectance" [0.5 0.5 0.5]
+Shape "sphere" "float radius" [1]
+AttributeBegin
+    Translate 100 100 100
+    AreaLightSource "diffuse" "rgb L" [1 1 1]
+    Material "diffuse" "rgb reflectance" [0 0 0]
+    Shape "sphere" "float radius" [1]
+AttributeEnd

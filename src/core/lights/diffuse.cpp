@@ -56,6 +56,32 @@ Light::Evaluation DiffuseLight::Closure::evaluate(const Interaction& it_light, c
     return eval;
 }
 
+Light::Sample DiffuseLight::Closure::sample_li(
+    Expr<uint> instance_id, const Interaction& it_from, Expr<float2> u) const noexcept
+{
+    auto light      = instance<DiffuseLight::Instance>();
+    auto&& renderer = light->renderer();
+    auto light_inst = renderer.geometry()->instance(instance_id);
+    auto light_to_world = renderer.geometry()->instance_to_world(instance_id);
+
+    auto [triangle_id, ux] = sample_alias_table(
+        renderer.buffer<AliasEntry>(light_inst.alias_table_buffer_id()),
+        light_inst.triangle_count(), u.x);
+    auto triangle = renderer.geometry()->triangle(light_inst, triangle_id);
+    auto uv       = sample_uniform_triangle(make_float2(ux, u.y)).xy();
+    auto attrib   = renderer.geometry()->shading_point(light_inst, triangle, uv, light_to_world);
+    auto it_light = Interaction::from_surface(
+        std::move(light_inst), attrib.pg, attrib.ng, attrib.uv, attrib.pg,
+        Frame::make(attrib.ns, attrib.dpdu), instance_id, triangle_id, attrib.area,
+        dot(attrib.ng, it_from.p_g - attrib.pg) > 0.0f);
+
+    return Light::Sample{
+        .eval  = evaluate(it_light, it_from),
+        .p     = attrib.pg,
+        .delta = false,
+    };
+}
+
 Light::Closure::EmissionSample DiffuseLight::Closure::sample_le(
     Expr<uint> instance_id, Expr<float2> u_position, Expr<float2> u_direction) const noexcept
 {

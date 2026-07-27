@@ -74,6 +74,18 @@ luisa::unique_ptr<Renderer> Renderer::create(Device& device, Stream& stream, con
 
     renderer->m_geometry = luisa::make_unique<Geometry>(*renderer);
     renderer->m_geometry->build(command_buffer, scene.instances());
+    auto area_lights = renderer->m_geometry->light_instances();
+    renderer->m_light_handles.assign(area_lights.begin(), area_lights.end());
+    for (auto light : scene.standalone_lights())
+    {
+        if (light != nullptr && !light->is_null())
+        {
+            renderer->m_light_handles.emplace_back(Light::Handle{
+                .instance_id = ~0u,
+                .light_tag   = renderer->register_light(command_buffer, light),
+            });
+        }
+    }
     update_bindless_if_dirty();
 
     if (!scene.environment()->is_black())
@@ -88,10 +100,11 @@ luisa::unique_ptr<Renderer> Renderer::create(Device& device, Stream& stream, con
     command_buffer << synchronize();
 
     LUISA_INFO(
-        "Created renderer in {} ms with {} shape instances, {} area-light instances, {} surface implementations, {} light implementations, environment={}.",
+        "Created renderer in {} ms with {} shape instances, {} area-light instances, {} standalone-light instances, {} surface implementations, {} light implementations, environment={}.",
         clock.toc(),
         renderer->m_geometry->instances().size(),
         renderer->m_geometry->light_instances().size(),
+        scene.standalone_lights().size(),
         renderer->m_surfaces.size(),
         renderer->m_lights.size(),
         renderer->m_environment == nullptr ? "none" : "infinite");

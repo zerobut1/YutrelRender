@@ -30,6 +30,7 @@
 #include "integrators/sppm.h"
 #include "integrators/vol_path.h"
 #include "lights/diffuse.h"
+#include "lights/point.h"
 #include "media/homogeneous.h"
 #include "samplers/independent.h"
 #include "samplers/sobol.h"
@@ -500,6 +501,11 @@ void validate_pbrt_scene(const PbrtScene& scene)
     }
 
     static constexpr std::array area_light_allowed{ParameterKey{"rgb", "L"}};
+    static constexpr std::array point_light_allowed{
+        ParameterKey{"rgb", "I"},
+        ParameterKey{"float", "scale"},
+        ParameterKey{"point3", "from"},
+    };
     static constexpr std::array infinite_light_allowed{
         ParameterKey{"rgb", "L"},
         ParameterKey{"string", "filename"},
@@ -513,6 +519,26 @@ void validate_pbrt_scene(const PbrtScene& scene)
         ParameterKey{"point3", "from"},
         ParameterKey{"point3", "to"},
     };
+    for (auto&& light : scene.point_lights)
+    {
+        validate_parameters(light.parameters, "LightSource 'point'", point_light_allowed);
+        auto finite = [](float3 v) noexcept
+        {
+            return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+        };
+        if (!finite(light.I) || light.I.x < 0.0f || light.I.y < 0.0f || light.I.z < 0.0f)
+        {
+            fail(light.source, "PBRT point LightSource intensity must be finite and non-negative.");
+        }
+        if (!std::isfinite(light.scale) || light.scale < 0.0f)
+        {
+            fail(light.source, "PBRT point LightSource scale must be finite and non-negative.");
+        }
+        if (!finite(light.from))
+        {
+            fail(light.source, "PBRT point LightSource position must be finite.");
+        }
+    }
     for (auto&& light : scene.infinite_lights)
     {
         validate_parameters(light.parameters, "LightSource 'infinite'", infinite_light_allowed);
@@ -674,6 +700,14 @@ void validate_pbrt_scene(const PbrtScene& scene)
         at(m, 0u, 0u) * v.x + at(m, 0u, 1u) * v.y + at(m, 0u, 2u) * v.z,
         at(m, 1u, 0u) * v.x + at(m, 1u, 1u) * v.y + at(m, 1u, 2u) * v.z,
         at(m, 2u, 0u) * v.x + at(m, 2u, 1u) * v.y + at(m, 2u, 2u) * v.z);
+}
+
+[[nodiscard]] float3 transform_point(const Matrix4& m, float3 p) noexcept
+{
+    return make_float3(
+        at(m, 0u, 0u) * p.x + at(m, 0u, 1u) * p.y + at(m, 0u, 2u) * p.z + at(m, 0u, 3u),
+        at(m, 1u, 0u) * p.x + at(m, 1u, 1u) * p.y + at(m, 1u, 2u) * p.z + at(m, 1u, 3u),
+        at(m, 2u, 0u) * p.x + at(m, 2u, 1u) * p.y + at(m, 2u, 2u) * p.z + at(m, 2u, 3u));
 }
 
 [[nodiscard]] float4x4 instance_transform(const std::array<float, 16u>& raw) noexcept
@@ -898,6 +932,16 @@ SceneSpec PbrtImporter::import(PbrtScene scene)
             SpecMeta{.name = "pbrt_grouped_environment", .source = SourceLocation{scene.source_path}},
             std::move(environments));
     }();
+
+    for (auto&& desc : scene.point_lights)
+    {
+        auto position = transform_point(desc.pbrt_transform, desc.from);
+        auto intensity = builder.add_anonymous_texture<ConstantTextureSpec>(
+            desc.source, make_float4(desc.I, 1.0f));
+        auto light = builder.add_anonymous_light<PointLightSpec>(
+            desc.source, intensity, position, desc.scale);
+        builder.add_standalone_light(light);
+    }
 
     luisa::unordered_map<luisa::string, const TextureDesc*> texture_declarations;
     texture_declarations.reserve(scene.textures.size());

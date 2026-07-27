@@ -255,6 +255,16 @@ struct DistantLightDesc
     luisa::vector<RawParameter> parameters;
 };
 
+struct PointLightDesc
+{
+    SourceLocation source;
+    float3 I{1.0f};
+    float scale{1.0f};
+    float3 from{0.0f};
+    Matrix4 pbrt_transform{identity_matrix4};
+    luisa::vector<RawParameter> parameters;
+};
+
 struct MeshDesc
 {
     SourceLocation source;
@@ -304,6 +314,7 @@ struct PbrtScene
     luisa::unordered_map<luisa::string, MediumDesc> named_media;
     luisa::vector<MeshDesc> meshes;
     luisa::vector<ShapeDesc> shapes;
+    luisa::vector<PointLightDesc> point_lights;
     luisa::vector<InfiniteLightDesc> infinite_lights;
     luisa::vector<DistantLightDesc> distant_lights;
 };

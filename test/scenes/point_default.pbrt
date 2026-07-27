@@ -1,0 +1,9 @@
+Integrator "path"
+Sampler "independent"
+PixelFilter "triangle"
+Film "rgb" "string filename" ["point_default.exr"] "integer xresolution" [8] "integer yresolution" [8]
+Camera "perspective"
+WorldBegin
+LightSource "point"
+Material "diffuse"
+Shape "sphere"

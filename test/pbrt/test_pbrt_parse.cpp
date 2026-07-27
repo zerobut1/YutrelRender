@@ -523,6 +523,47 @@ static auto test_pbrt_parse_registration = []
         expect(is_near(light.pbrt_transform[8u], -1.0f));
     };
 
+    "parse_point_light"_test = []
+    {
+        auto scene = PbrtParser::parse("test/scenes/point_basic.pbrt");
+        expect(scene.point_lights.size() == 1u);
+        if (scene.point_lights.empty()) { return; }
+        auto&& light = scene.point_lights.front();
+        expect(is_near(light.I.x, 2.0f));
+        expect(is_near(light.I.y, 3.0f));
+        expect(is_near(light.I.z, 4.0f));
+        expect(is_near(light.scale, 2.0f));
+        expect(is_near(light.from.x, 1.0f));
+        expect(is_near(light.pbrt_transform[3u], 1.0f));
+        expect(is_near(light.pbrt_transform[7u], 2.0f));
+        expect(is_near(light.pbrt_transform[11u], 3.0f));
+
+        auto defaults = PbrtParser::parse("test/scenes/point_default.pbrt");
+        expect(defaults.point_lights.size() == 1u);
+        if (!defaults.point_lights.empty())
+        {
+            auto&& point = defaults.point_lights.front();
+            expect(is_near(point.I.x, 1.0f));
+            expect(is_near(point.scale, 1.0f));
+            expect(is_near(point.from.x, 0.0f));
+        }
+    };
+
+    "reject_invalid_point_lights"_test = []
+    {
+        for (auto path : {
+                 "test/scenes/point_invalid_scale.pbrt",
+                 "test/scenes/point_invalid_intensity.pbrt",
+                 "test/scenes/point_nonfinite_from.pbrt",
+                 "test/scenes/point_duplicate_parameter.pbrt",
+                 "test/scenes/point_unsupported_radius.pbrt",
+                 "test/scenes/point_unsupported_power.pbrt",
+             })
+        {
+            expect(parse_error_contains(path, {path, "point"}));
+        }
+    };
+
     "reject_invalid_distant_lights"_test = []
     {
         for (auto path : {

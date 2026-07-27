@@ -1,0 +1,9 @@
+Integrator "path"
+Sampler "independent"
+PixelFilter "triangle"
+Film "rgb" "string filename" ["point_unsupported_power.exr"]
+Camera "perspective"
+WorldBegin
+LightSource "point" "float power" [3000]
+Material "diffuse"
+Shape "sphere"

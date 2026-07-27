@@ -9,6 +9,7 @@
 #include "environments/uniform.h"
 #include "filters/gaussian.h"
 #include "integrators/vol_path.h"
+#include "lights/point.h"
 #include "media/homogeneous.h"
 #include "pbrt/pbrt_importer.h"
 #include "pbrt/pbrt_parser.h"
@@ -1417,6 +1418,36 @@ static auto test_pbrt_import_registration = []
                 expect(is_near(default_emission->value().y, 1.0f));
                 expect(is_near(default_emission->value().z, 1.0f));
             }
+        }
+    };
+
+    "import_standalone_point_light"_test = []
+    {
+        auto parsed = PbrtParser::parse("test/scenes/point_basic.pbrt");
+        auto spec   = PbrtImporter::import(std::move(parsed));
+        expect(spec.standalone_lights().size() == 1u);
+        expect(spec.instances().size() == 2u);
+        expect(spec.instances().size() == 2u && spec.instances()[1u].light.has_value());
+        if (spec.standalone_lights().empty()) { return; }
+
+        auto ref   = spec.standalone_lights().front();
+        auto point = dynamic_cast<const PointLightSpec*>(&spec.lights().spec(ref));
+        expect(point != nullptr);
+        if (point == nullptr) { return; }
+        expect(is_near(point->position().x, 2.0f));
+        expect(is_near(point->position().y, 2.0f));
+        expect(is_near(point->position().z, 2.0f));
+        expect(is_near(point->scale(), 2.0f));
+        expect(!point->validate().has_value());
+
+        auto intensity = dynamic_cast<const ConstantTextureSpec*>(
+            &spec.textures().spec(point->intensity()));
+        expect(intensity != nullptr);
+        if (intensity != nullptr)
+        {
+            expect(is_near(intensity->value().x, 2.0f));
+            expect(is_near(intensity->value().y, 3.0f));
+            expect(is_near(intensity->value().z, 4.0f));
         }
     };
 

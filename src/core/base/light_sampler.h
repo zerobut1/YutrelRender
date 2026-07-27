@@ -65,7 +65,6 @@ public:
     [[nodiscard]] Sample sample(const Interaction& it_from, Expr<float> u_select, Expr<float2> u_light, const SampledWavelengths& swl, Expr<float> time) const noexcept;
     [[nodiscard]] Selection select(Expr<float> u, Expr<float> time) const noexcept;
     [[nodiscard]] Sample sample_selection(const Interaction& it_from, const Selection& sel, Expr<float2> u, const SampledWavelengths& swl, Expr<float> time) const noexcept;
-    [[nodiscard]] auto sample_area(Expr<float3> p_from, Expr<uint> tag, Expr<float2> u_in) const noexcept;
     [[nodiscard]] Sample sample_light(const Interaction& it_from, const Selection& sel, Expr<float2> u, const SampledWavelengths& swl, Expr<float> time) const noexcept;
     [[nodiscard]] Sample sample_environment(const Interaction& it_from, const Selection& sel, Expr<float2> u, const SampledWavelengths& swl, Expr<float> time) const noexcept;
 };

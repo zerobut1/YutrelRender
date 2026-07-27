@@ -1,0 +1,9 @@
+Integrator "path"
+Sampler "independent"
+PixelFilter "triangle"
+Film "rgb" "string filename" ["point_invalid_intensity.exr"]
+Camera "perspective"
+WorldBegin
+LightSource "point" "rgb I" [1 -1 1]
+Material "diffuse"
+Shape "sphere"

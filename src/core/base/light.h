@@ -44,9 +44,10 @@ public:
     {
         Evaluation eval;
         Float3 p;
+        Bool delta;
         [[nodiscard]] static auto zero(uint dimension) noexcept
         {
-            return Sample{.eval = Evaluation::zero(dimension), .p = make_float3()};
+            return Sample{.eval = Evaluation::zero(dimension), .p = make_float3(), .delta = false};
         }
     };
 
@@ -146,6 +147,8 @@ public:
     };
 
     [[nodiscard]] virtual Evaluation evaluate(const Interaction& it_light, const Interaction& it_from) const noexcept = 0;
+    [[nodiscard]] virtual Sample sample_li(
+        Expr<uint> instance_id, const Interaction& it_from, Expr<float2> u) const noexcept = 0;
     [[nodiscard]] virtual EmissionSample sample_le(
         Expr<uint> instance_id, Expr<float2> u_position, Expr<float2> u_direction) const noexcept;
 };

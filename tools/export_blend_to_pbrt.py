@@ -162,22 +162,15 @@ def _light_power(light: bpy.types.Light) -> float:
 
 def _point_light(light_obj: bpy.types.Object) -> list[str]:
     light = light_obj.data
-    radius = max(float(light.shadow_soft_size), 1e-4)
-    scale = light_obj.matrix_world.to_scale()
-    radius *= sum(abs(component) for component in scale) / 3.0
     power = _light_power(light)
-    radiance = power / (4.0 * math.pi * math.pi * radius * radius)
-    color = Vector(light.color) * radiance
+    intensity = Vector(light.color) * (power / (4.0 * math.pi))
     position = light_obj.matrix_world.translation
     return [
-        f"# Point light converted to an emissive sphere: {light_obj.name}",
+        f"# Delta point light (Blender shadow_soft_size ignored): {light_obj.name}",
         "AttributeBegin",
         f"    Translate {_vector(position)}",
-        '    AreaLightSource "diffuse"',
-        f'        "rgb L" [ {_vector(color)} ]',
-        '    NamedMaterial "LightBlack"',
-        '    Shape "sphere"',
-        f'        "float radius" [ {_fmt(radius)} ]',
+        '    LightSource "point"',
+        f'        "rgb I" [ {_vector(intensity)} ]',
         "AttributeEnd",
     ]
 

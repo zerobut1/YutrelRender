@@ -1,0 +1,9 @@
+Integrator "path"
+Sampler "independent"
+PixelFilter "triangle"
+Film "rgb" "string filename" ["point_duplicate_parameter.exr"]
+Camera "perspective"
+WorldBegin
+LightSource "point" "float scale" [1] "float scale" [2]
+Material "diffuse"
+Shape "sphere"

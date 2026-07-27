@@ -19,6 +19,7 @@ struct Scene::Config
     luisa::vector<luisa::unique_ptr<Filter>> filters;
     luisa::vector<luisa::unique_ptr<Sampler>> samplers;
     luisa::vector<luisa::unique_ptr<Integrator>> integrators;
+    luisa::vector<const Light*> standalone_lights;
     luisa::vector<ShapeInstance> instances;
 
     const Spectrum* spectrum{};
@@ -68,6 +69,7 @@ void Scene::_set_render_roots(const Spectrum* spectrum, const Environment* envir
     m_config->integrator  = integrator;
 }
 
+void Scene::_add_standalone_light(const Light* light) noexcept { m_config->standalone_lights.emplace_back(light); }
 void Scene::_add_instance(ShapeInstance instance) noexcept { m_config->instances.emplace_back(instance); }
 
 const Spectrum* Scene::spectrum() const noexcept { return m_config->spectrum; }
@@ -77,5 +79,6 @@ const Film* Scene::film() const noexcept { return m_config->film; }
 const Filter* Scene::filter() const noexcept { return m_config->filter; }
 const Sampler* Scene::sampler() const noexcept { return m_config->sampler; }
 const Integrator* Scene::integrator() const noexcept { return m_config->integrator; }
+luisa::span<const Light* const> Scene::standalone_lights() const noexcept { return m_config->standalone_lights; }
 luisa::span<const ShapeInstance> Scene::instances() const noexcept { return m_config->instances; }
 } // namespace Yutrel

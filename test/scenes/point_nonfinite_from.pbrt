@@ -1,0 +1,9 @@
+Integrator "path"
+Sampler "independent"
+PixelFilter "triangle"
+Film "rgb" "string filename" ["point_nonfinite_from.exr"]
+Camera "perspective"
+WorldBegin
+LightSource "point" "point3 from" [0 nan 0]
+Material "diffuse"
+Shape "sphere"

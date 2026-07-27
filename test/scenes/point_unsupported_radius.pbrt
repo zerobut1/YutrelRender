@@ -1,0 +1,9 @@
+Integrator "path"
+Sampler "independent"
+PixelFilter "triangle"
+Film "rgb" "string filename" ["point_unsupported_radius.exr"]
+Camera "perspective"
+WorldBegin
+LightSource "point" "float radius" [0.1]
+Material "diffuse"
+Shape "sphere"

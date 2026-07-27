@@ -72,7 +72,8 @@ Var<Ray> Interaction::spawn_ray_to(Expr<float3> p) const noexcept
     auto p_from = p_robust(p - p_s);
     auto L      = p - p_from;
     auto d      = length(L);
-    auto wi     = L * (1.0f / d);
-    return make_ray(p_from, wi, 0.0f, d * 0.999f);
+    auto valid  = d > 1e-8f;
+    auto wi     = ite(valid, L * (1.0f / max(d, 1e-8f)), make_float3(0.0f, 1.0f, 0.0f));
+    return make_ray(p_from, wi, 0.0f, ite(valid, d * 0.999f, 0.0f));
 }
 } // namespace Yutrel

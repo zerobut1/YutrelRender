@@ -44,6 +44,7 @@ private:
     [[nodiscard]] const Sampler* _store(luisa::unique_ptr<Sampler> sampler) noexcept;
     [[nodiscard]] const Integrator* _store(luisa::unique_ptr<Integrator> integrator) noexcept;
     void _set_render_roots(const Spectrum* spectrum, const Environment* environment, const Camera* camera, const Film* film, const Filter* filter, const Sampler* sampler, const Integrator* integrator) noexcept;
+    void _add_standalone_light(const Light* light) noexcept;
     void _add_instance(ShapeInstance instance) noexcept;
 
 public:
@@ -64,6 +65,7 @@ public:
     [[nodiscard]] const Filter* filter() const noexcept;
     [[nodiscard]] const Sampler* sampler() const noexcept;
     [[nodiscard]] const Integrator* integrator() const noexcept;
+    [[nodiscard]] luisa::span<const Light* const> standalone_lights() const noexcept;
     [[nodiscard]] luisa::span<const ShapeInstance> instances() const noexcept;
 };
 } // namespace Yutrel

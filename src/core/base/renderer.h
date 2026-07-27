@@ -59,6 +59,7 @@ private:
     luisa::unordered_map<const Light*, uint> m_light_tags;
     luisa::unordered_map<const Medium*, uint> m_medium_tags;
     luisa::unordered_map<const Texture*, luisa::unique_ptr<Texture::Instance>> m_textures;
+    luisa::vector<Light::Handle> m_light_handles;
 
     luisa::unique_ptr<Spectrum::Instance> m_spectrum;
     luisa::unique_ptr<Environment::Instance> m_environment;
@@ -170,8 +171,9 @@ public:
     [[nodiscard]] auto geometry() const noexcept { return m_geometry.get(); }
     [[nodiscard]] auto& surfaces() const noexcept { return m_surfaces; }
     [[nodiscard]] auto& lights() const noexcept { return m_lights; }
+    [[nodiscard]] auto light_handles() const noexcept { return luisa::span{m_light_handles}; }
     [[nodiscard]] auto& media() const noexcept { return m_media; }
-    [[nodiscard]] bool has_lighting() const noexcept { return !m_lights.empty() || m_environment != nullptr; }
+    [[nodiscard]] bool has_lighting() const noexcept { return !m_light_handles.empty() || m_environment != nullptr; }
 
     [[nodiscard]] const Texture::Instance* build_texture(CommandBuffer& command_buffer, const Texture* texture) noexcept;
 

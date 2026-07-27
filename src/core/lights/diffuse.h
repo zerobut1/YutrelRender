@@ -48,6 +48,8 @@ public:
         : Light::Closure(instance, swl, time) {}
 
     [[nodiscard]] Evaluation evaluate(const Interaction& it_light, const Interaction& it_from) const noexcept override;
+    [[nodiscard]] Sample sample_li(
+        Expr<uint> instance_id, const Interaction& it_from, Expr<float2> u) const noexcept override;
     [[nodiscard]] EmissionSample sample_le(
         Expr<uint> instance_id, Expr<float2> u_position, Expr<float2> u_direction) const noexcept override;
 };

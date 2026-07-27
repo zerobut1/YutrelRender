@@ -39,4 +39,5 @@ blender --background path/to/scene.blend --python tools/export_blend_to_pbrt.py 
 
 The exporter writes one binary PLY per visible mesh, the active perspective camera,
 constant world background, and Point, Sun, or rectangular Area lights. Point lights are
-converted to emissive spheres. All scene meshes use a white diffuse material.
+exported as delta lights, so Blender's `shadow_soft_size` is ignored. All scene meshes use
+a white diffuse material.
