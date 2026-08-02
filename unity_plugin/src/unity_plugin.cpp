@@ -15,6 +15,7 @@
 
 #include <luisa/backends/ext/native_resource_ext.hpp>
 #include <luisa/core/logging.h>
+#include <luisa/core/stl/unordered_map.h>
 #include <luisa/luisa-compute.h>
 
 #include "base/film.h"
@@ -36,7 +37,7 @@ namespace yutrel::unity {
 using namespace luisa;
 using namespace luisa::compute;
 
-constexpr uint32_t abi_version = 1u;
+constexpr uint32_t abi_version = 3u;
 constexpr int clear_event_id = 0;
 constexpr int path_trace_event_id = 1;
 
@@ -66,6 +67,8 @@ struct PathTraceEventData {
     ID3D12Resource *output;
     uint32_t width;
     uint32_t height;
+    uint32_t view_id;
+    uint32_t flip_output_y;
     float camera_to_world[16];
     float vertical_fov_degrees;
     float pre_exposure;
@@ -242,16 +245,30 @@ copy_static_scene(const StaticSceneData &data) {
 
 class Plugin final {
 private:
-    struct SceneRuntime {
-        luisa::unique_ptr<Yutrel::Scene> scene;
-        luisa::unique_ptr<Yutrel::Renderer> renderer;
+    struct ViewRuntime {
         Image<float> accumulation;
         Yutrel::ExternalCameraState camera{};
         uint sample_index{};
         bool camera_valid{};
+    };
+
+    struct SceneRuntime {
+        luisa::unique_ptr<Yutrel::Scene> scene;
+        luisa::unique_ptr<Yutrel::Renderer> renderer;
+        luisa::unordered_map<uint32_t, ViewRuntime> views;
+        Yutrel::ExternalCameraState active_camera{};
+        bool active_camera_valid{};
+
+        [[nodiscard]] ViewRuntime &view(uint32_t view_id) {
+            return views[view_id];
+        }
 
         ~SceneRuntime() noexcept {
-            accumulation = {};
+            for (auto &[view_id, view] : views) {
+                static_cast<void>(view_id);
+                view.accumulation = {};
+            }
+            views.clear();
             renderer = nullptr;
             scene = nullptr;
         }
@@ -270,7 +287,7 @@ private:
     Shader2D<Image<float>> _clear_shader;
     Shader2D<Image<float>> _black_shader;
     Shader2D<Image<float>> _clear_accumulation_shader;
-    Shader2D<Image<float>, Image<float>, float> _present_shader;
+    Shader2D<Image<float>, Image<float>, float, uint> _present_shader;
     luisa::unique_ptr<StaticSceneSnapshot> _scene_snapshot;
     luisa::unique_ptr<SceneRuntime> _scene_runtime;
     uint32_t _reported_path_errors{};
@@ -295,13 +312,21 @@ public:
         Kernel2D clear_accumulation = [](ImageFloat accumulation) noexcept {
             accumulation.write(dispatch_id().xy(), make_float4(0.0f));
         };
-        Kernel2D present = [](ImageFloat accumulation, ImageFloat output, Float pre_exposure) noexcept {
+        Kernel2D present = [](
+                               ImageFloat accumulation,
+                               ImageFloat output,
+                               Float pre_exposure,
+                               UInt flip_output_y) noexcept {
             auto pixel = dispatch_id().xy();
             auto sum = accumulation.read(pixel);
             auto rgb = ite(sum.w > 0.0f, sum.xyz() / sum.w, make_float3(0.0f));
             auto invalid = any(compute::isnan(rgb)) | any(compute::isinf(rgb));
             rgb = ite(invalid, make_float3(0.0f), rgb);
-            auto output_pixel = make_uint2(pixel.x, dispatch_size().y - 1u - pixel.y);
+            auto output_y = ite(
+                flip_output_y != 0u,
+                dispatch_size().y - 1u - pixel.y,
+                pixel.y);
+            auto output_pixel = make_uint2(pixel.x, output_y);
             output.write(output_pixel, make_float4(rgb * pre_exposure, 1.0f));
         };
         _clear_shader = _device.compile(clear);
@@ -444,7 +469,6 @@ private:
             report_path_error_once(path_error_scene, "Failed to create the Unity Path Tracing renderer.");
             return false;
         }
-        runtime->accumulation = _device.create_image<float>(PixelStorage::FLOAT4, camera.resolution);
         _scene_runtime = std::move(runtime);
         return true;
     }
@@ -453,6 +477,8 @@ private:
         Image<float> &output,
         const PathTraceEventData &data) {
         if (data.width == 0u || data.height == 0u ||
+            data.view_id == 0u ||
+            data.flip_output_y > 1u ||
             !std::isfinite(data.vertical_fov_degrees) ||
             data.vertical_fov_degrees <= 0.0f || data.vertical_fov_degrees >= 180.0f ||
             !std::isfinite(data.pre_exposure) || data.pre_exposure <= 0.0f) {
@@ -473,42 +499,57 @@ private:
         }
 
         auto &runtime = *_scene_runtime;
-        auto resolution_changed = !runtime.accumulation ||
-                                  runtime.accumulation.size().x != camera.resolution.x ||
-                                  runtime.accumulation.size().y != camera.resolution.y;
-        auto camera_changed = !runtime.camera_valid || resolution_changed ||
-                              !matrix_near(runtime.camera.camera_to_world, camera.camera_to_world) ||
-                              std::abs(runtime.camera.vertical_fov_degrees - camera.vertical_fov_degrees) > 1e-6f;
+        auto &view = runtime.view(data.view_id);
+        auto resolution_changed = !view.accumulation ||
+                                  view.accumulation.size().x != camera.resolution.x ||
+                                  view.accumulation.size().y != camera.resolution.y;
+        auto view_changed = !view.camera_valid || resolution_changed ||
+                            !matrix_near(view.camera.camera_to_world, camera.camera_to_world) ||
+                            std::abs(view.camera.vertical_fov_degrees - camera.vertical_fov_degrees) > 1e-6f;
+        auto camera_upload_needed = !runtime.active_camera_valid ||
+                                    runtime.active_camera.resolution.x != camera.resolution.x ||
+                                    runtime.active_camera.resolution.y != camera.resolution.y ||
+                                    !matrix_near(runtime.active_camera.camera_to_world, camera.camera_to_world) ||
+                                    std::abs(runtime.active_camera.vertical_fov_degrees - camera.vertical_fov_degrees) > 1e-6f;
         if (resolution_changed) {
             _stream << synchronize();
-            runtime.accumulation = _device.create_image<float>(PixelStorage::FLOAT4, camera.resolution);
+            view.accumulation = _device.create_image<float>(PixelStorage::FLOAT4, camera.resolution);
         }
 
         Yutrel::CommandBuffer commands{_stream};
-        if (camera_changed && !runtime.renderer->update_external_camera(commands, camera)) {
+        if (camera_upload_needed && !runtime.renderer->update_external_camera(commands, camera)) {
             commands << commit();
             report_path_error_once(path_error_runtime, "Failed to update the Unity Path Tracing camera.");
             return false;
         }
-        auto reset = data.reset_accumulation != 0u || camera_changed;
+        runtime.active_camera = camera;
+        runtime.active_camera_valid = true;
+
+        auto reset = data.reset_accumulation != 0u || view_changed;
         if (reset) {
-            commands << _clear_accumulation_shader(runtime.accumulation).dispatch(camera.resolution);
-            runtime.sample_index = 0u;
+            commands << _clear_accumulation_shader(view.accumulation).dispatch(camera.resolution);
+            view.sample_index = 0u;
         }
-        runtime.camera = camera;
-        runtime.camera_valid = true;
+        view.camera = camera;
+        view.camera_valid = true;
 
         if (!runtime.renderer->render_external_sample(
                 commands,
-                runtime.accumulation,
+                view.accumulation,
                 camera.resolution,
-                runtime.sample_index++)) {
+                view.sample_index)) {
             commands << commit();
             report_path_error_once(path_error_runtime, "Failed to record a Unity Path Tracing sample.");
             return false;
         }
+        view.sample_index++;
         commands
-            << _present_shader(runtime.accumulation, output, data.pre_exposure).dispatch(camera.resolution)
+            << _present_shader(
+                   view.accumulation,
+                   output,
+                   data.pre_exposure,
+                   data.flip_output_y)
+                   .dispatch(camera.resolution)
             << [output = std::move(output)]() mutable {}
             << synchronize();
         return true;
@@ -688,7 +729,9 @@ YutrelUnityCreatePathTraceEvent(const yutrel::unity::PathTraceEventData *data) {
     using namespace yutrel::unity;
     if (data == nullptr || data->abi_version != abi_version ||
         data->struct_size != sizeof(PathTraceEventData) || data->output == nullptr ||
-        data->width == 0u || data->height == 0u) {
+        data->width == 0u || data->height == 0u ||
+        data->view_id == 0u ||
+        data->flip_output_y > 1u) {
         return nullptr;
     }
     return new (std::nothrow) PathTraceEventData{*data};

@@ -110,6 +110,68 @@ namespace
     return has_radiance;
 }
 
+[[nodiscard]] bool has_sample_count(
+    const luisa::vector<float4>& pixels,
+    uint sample_count)
+{
+    for (auto pixel : pixels)
+    {
+        if (!std::isfinite(pixel.x) || !std::isfinite(pixel.y) ||
+            !std::isfinite(pixel.z) || !std::isfinite(pixel.w) ||
+            pixel.w != static_cast<float>(sample_count))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] bool render_interleaved_views(
+    Device& device,
+    Stream& stream,
+    Renderer& renderer)
+{
+    ExternalCameraState camera_a{
+        .camera_to_world = make_float4x4(1.0f),
+        .resolution = make_uint2(16u, 16u),
+        .vertical_fov_degrees = 45.0f,
+    };
+    auto camera_b = camera_a;
+    camera_b.camera_to_world[3] = make_float4(0.25f, 0.0f, 0.0f, 1.0f);
+    camera_b.resolution = make_uint2(8u, 8u);
+    camera_b.vertical_fov_degrees = 60.0f;
+
+    auto accumulation_a = device.create_image<float>(PixelStorage::FLOAT4, camera_a.resolution);
+    auto accumulation_b = device.create_image<float>(PixelStorage::FLOAT4, camera_b.resolution);
+    Kernel2D clear = [](ImageFloat image) noexcept
+    {
+        image.write(dispatch_id().xy(), make_float4(0.0f));
+    };
+    auto clear_shader = device.compile(clear);
+
+    CommandBuffer commands{stream};
+    commands << clear_shader(accumulation_a).dispatch(camera_a.resolution)
+             << clear_shader(accumulation_b).dispatch(camera_b.resolution);
+    if (!renderer.update_external_camera(commands, camera_a) ||
+        !renderer.render_external_sample(commands, accumulation_a, camera_a.resolution, 0u) ||
+        !renderer.update_external_camera(commands, camera_b) ||
+        !renderer.render_external_sample(commands, accumulation_b, camera_b.resolution, 0u) ||
+        !renderer.update_external_camera(commands, camera_a) ||
+        !renderer.render_external_sample(commands, accumulation_a, camera_a.resolution, 1u))
+    {
+        return false;
+    }
+
+    luisa::vector<float4> pixels_a(
+        static_cast<size_t>(camera_a.resolution.x) * camera_a.resolution.y);
+    luisa::vector<float4> pixels_b(
+        static_cast<size_t>(camera_b.resolution.x) * camera_b.resolution.y);
+    commands << accumulation_a.copy_to(luisa::span{pixels_a})
+             << accumulation_b.copy_to(luisa::span{pixels_b})
+             << synchronize();
+    return has_sample_count(pixels_a, 2u) && has_sample_count(pixels_b, 1u);
+}
+
 }// namespace
 
 int main(int argc, char* argv[])
@@ -156,6 +218,11 @@ int main(int argc, char* argv[])
     if (!render_and_check(device, stream, *renderer, camera.resolution, 1u))
     {
         std::cerr << "External resize test failed.\n";
+        return 1;
+    }
+    if (!render_interleaved_views(device, stream, *renderer))
+    {
+        std::cerr << "External interleaved-view accumulation test failed.\n";
         return 1;
     }
     return 0;

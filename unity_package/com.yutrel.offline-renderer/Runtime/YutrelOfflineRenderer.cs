@@ -53,16 +53,117 @@ namespace Yutrel.OfflineRenderer
             }
         }
 
+        private sealed class ViewState
+        {
+            internal readonly uint nativeViewId;
+            internal readonly CameraResources resources = new();
+            internal Matrix4x4 previousCameraToWorld;
+            internal float previousVerticalFov;
+            internal bool previousCameraValid;
+
+            internal ViewState(uint nativeViewId)
+            {
+                this.nativeViewId = nativeViewId;
+            }
+
+            internal void Release()
+            {
+                resources.Release();
+                previousCameraValid = false;
+            }
+        }
+
+        private readonly struct ViewKey : IEquatable<ViewKey>
+        {
+            private readonly int cameraId;
+            private readonly CameraType cameraType;
+            private readonly bool outputsToBackbuffer;
+
+            internal ViewKey(Camera camera)
+            {
+                cameraId = camera.GetEntityId().GetHashCode();
+                cameraType = camera.cameraType;
+                outputsToBackbuffer = camera.targetTexture == null;
+            }
+
+            public bool Equals(ViewKey other)
+            {
+                return cameraId == other.cameraId &&
+                       cameraType == other.cameraType &&
+                       outputsToBackbuffer == other.outputsToBackbuffer;
+            }
+
+            public override bool Equals(object obj)
+            {
+                return obj is ViewKey other && Equals(other);
+            }
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    var hash = cameraId;
+                    hash = hash * 397 ^ (int)cameraType;
+                    hash = hash * 397 ^ (outputsToBackbuffer ? 1 : 0);
+                    return hash;
+                }
+            }
+        }
+
+#if UNITY_EDITOR
+        private sealed class SceneViewRepaintScheduler
+        {
+            private const double RepaintIntervalSeconds = 1.0 / 60.0;
+
+            private bool scheduled;
+            private double nextRepaintTime;
+
+            internal void Request()
+            {
+                if (scheduled)
+                {
+                    return;
+                }
+
+                scheduled = true;
+                UnityEditor.EditorApplication.update += OnEditorUpdate;
+            }
+
+            internal void Dispose()
+            {
+                if (scheduled)
+                {
+                    UnityEditor.EditorApplication.update -= OnEditorUpdate;
+                    scheduled = false;
+                }
+            }
+
+            private void OnEditorUpdate()
+            {
+                var now = UnityEditor.EditorApplication.timeSinceStartup;
+                if (now < nextRepaintTime)
+                {
+                    return;
+                }
+
+                UnityEditor.EditorApplication.update -= OnEditorUpdate;
+                scheduled = false;
+                nextRepaintTime = now + RepaintIntervalSeconds;
+                UnityEditor.EditorApplication.QueuePlayerLoopUpdate();
+                UnityEditor.SceneView.RepaintAll();
+            }
+        }
+#endif
+
         private const float CameraChangeEpsilon = 1e-6f;
 
-        private readonly CameraResources cameraResources = new();
+        private readonly Dictionary<ViewKey, ViewState> views = new();
+#if UNITY_EDITOR
+        private readonly SceneViewRepaintScheduler sceneViewRepaintScheduler = new();
+#endif
         private readonly bool nativeAcquired;
         private SceneUploadState sceneUploadState;
-        private int lockedCameraId;
-        private bool cameraLocked;
-        private Matrix4x4 previousCameraToWorld;
-        private float previousVerticalFov;
-        private bool previousCameraValid;
+        private uint nextNativeViewId = 1u;
 
         internal YutrelOfflineRenderer()
         {
@@ -79,28 +180,33 @@ namespace Yutrel.OfflineRenderer
             }
 
             var camera = context.camera;
-            if (camera.cameraType != CameraType.Game)
+            var isSceneView = false;
+            switch (camera.cameraType)
             {
-                NativeBridge.ReportInfoOnce("Yutrel Offline Renderer stage 1A only renders one Game Camera.");
-                return CreateBlackFallback(renderGraph, context.targetSize, context.sceneColorFormat);
+                case CameraType.Game:
+                    break;
+#if UNITY_EDITOR
+                case CameraType.SceneView:
+                    isSceneView = true;
+                    break;
+                case CameraType.Preview:
+                    break;
+#endif
+                default:
+                    NativeBridge.ReportInfoOnce(
+                        "Yutrel Offline Renderer stage 1B only renders Game, SceneView, and Preview Cameras.");
+                    return CreateBlackFallback(renderGraph, context.targetSize, context.sceneColorFormat);
             }
+
+            var viewLabel = camera.cameraType.ToString();
             if (camera.orthographic)
             {
-                NativeBridge.ReportErrorOnce("Yutrel Offline Renderer stage 1A requires a perspective Camera.");
+                NativeBridge.ReportInfoOnce(
+                    "Yutrel Offline Renderer stage 1B requires perspective Game, SceneView, and Preview Cameras.");
                 return CreateBlackFallback(renderGraph, context.targetSize, context.sceneColorFormat);
             }
 
-            var cameraId = camera.GetEntityId().GetHashCode();
-            if (!cameraLocked)
-            {
-                cameraLocked = true;
-                lockedCameraId = cameraId;
-            }
-            else if (lockedCameraId != cameraId)
-            {
-                NativeBridge.ReportInfoOnce("Yutrel Offline Renderer ignored an additional Game Camera.");
-                return CreateBlackFallback(renderGraph, context.targetSize, context.sceneColorFormat);
-            }
+            var view = GetOrCreateView(camera);
 
             if (sceneUploadState == SceneUploadState.NotAttempted)
             {
@@ -113,11 +219,12 @@ namespace Yutrel.OfflineRenderer
                 return CreateBlackFallback(renderGraph, context.targetSize, context.sceneColorFormat);
             }
 
-            var resized = cameraResources.Ensure(camera, context.targetSize);
-            var renderTexture = cameraResources.color?.rt;
+            var resized = view.resources.Ensure(camera, context.targetSize);
+            var renderTexture = view.resources.color?.rt;
             if (renderTexture == null || !renderTexture.IsCreated())
             {
-                NativeBridge.ReportErrorOnce("Yutrel Offline Renderer failed to create its Game Camera RenderTexture.");
+                NativeBridge.ReportErrorOnce(
+                    $"Yutrel Offline Renderer failed to create its {viewLabel} Camera RenderTexture.");
                 return CreateBlackFallback(renderGraph, context.targetSize, context.sceneColorFormat);
             }
 
@@ -129,45 +236,73 @@ namespace Yutrel.OfflineRenderer
             }
 
             var cameraToWorld = BuildCameraToWorld(camera.transform);
-            var cameraChanged = !previousCameraValid ||
-                                !MatrixNear(previousCameraToWorld, cameraToWorld) ||
-                                Mathf.Abs(previousVerticalFov - camera.fieldOfView) > CameraChangeEpsilon;
+            var cameraChanged = !view.previousCameraValid ||
+                                !MatrixNear(view.previousCameraToWorld, cameraToWorld) ||
+                                Mathf.Abs(view.previousVerticalFov - camera.fieldOfView) > CameraChangeEpsilon;
             var resetAccumulation = resized || cameraChanged;
-            previousCameraToWorld = cameraToWorld;
-            previousVerticalFov = camera.fieldOfView;
-            previousCameraValid = true;
+            view.previousCameraToWorld = cameraToWorld;
+            view.previousVerticalFov = camera.fieldOfView;
+            view.previousCameraValid = true;
 
             var output = renderGraph.ImportTexture(
-                cameraResources.color,
+                view.resources.color,
                 new ImportResourceParams
                 {
                     clearOnFirstUse = true,
                     clearColor = Color.black,
                     discardOnLastUse = false
                 });
+            var flipOutputY = SystemInfo.graphicsUVStartsAtTop;
             OfflinePathTracePass.Record(
                 renderGraph,
                 output,
                 outputPointer,
                 context.targetSize,
+                view.nativeViewId,
+                flipOutputY,
                 cameraToWorld,
                 camera.fieldOfView,
                 context.preExposure,
                 resetAccumulation);
+#if UNITY_EDITOR
+            if (isSceneView)
+            {
+                sceneViewRepaintScheduler.Request();
+            }
+#endif
             return new YutrelRendererOutput(output);
         }
 
         protected override void Dispose(bool disposing)
         {
-            cameraResources.Release();
-            cameraLocked = false;
-            previousCameraValid = false;
+            foreach (var view in views.Values)
+            {
+                view.Release();
+            }
+            views.Clear();
+#if UNITY_EDITOR
+            sceneViewRepaintScheduler.Dispose();
+#endif
             sceneUploadState = SceneUploadState.NotAttempted;
+            nextNativeViewId = 1u;
 
             if (nativeAcquired)
             {
                 NativeBridge.Release();
             }
+        }
+
+        private ViewState GetOrCreateView(Camera camera)
+        {
+            var key = new ViewKey(camera);
+            if (views.TryGetValue(key, out var view))
+            {
+                return view;
+            }
+
+            view = new ViewState(nextNativeViewId++);
+            views.Add(key, view);
+            return view;
         }
 
         private static bool TryUploadStaticScene()
@@ -190,7 +325,7 @@ namespace Yutrel.OfflineRenderer
             if (meshCount != 1 || selectedFilter == null || selectedRenderer == null)
             {
                 NativeBridge.ReportErrorOnce(
-                    $"Yutrel Offline Renderer stage 1A requires exactly one enabled MeshFilter + MeshRenderer; found {meshCount}.");
+                    $"Yutrel Offline Renderer stage 1B requires exactly one enabled MeshFilter + MeshRenderer; found {meshCount}.");
                 return false;
             }
 
@@ -209,21 +344,21 @@ namespace Yutrel.OfflineRenderer
             if (lightCount != 1 || selectedLight == null)
             {
                 NativeBridge.ReportErrorOnce(
-                    $"Yutrel Offline Renderer stage 1A requires exactly one enabled Directional Light; found {lightCount}.");
+                    $"Yutrel Offline Renderer stage 1B requires exactly one enabled Directional Light; found {lightCount}.");
                 return false;
             }
 
             var mesh = selectedFilter.sharedMesh;
             if (mesh == null || !mesh.isReadable)
             {
-                NativeBridge.ReportErrorOnce("The stage 1A Mesh must exist and have Read/Write enabled.");
+                NativeBridge.ReportErrorOnce("The stage 1B Mesh must exist and have Read/Write enabled.");
                 return false;
             }
             var vertices = mesh.vertices;
             var normals = mesh.normals;
             if (vertices.Length == 0 || normals.Length != vertices.Length)
             {
-                NativeBridge.ReportErrorOnce("The stage 1A Mesh must provide one normal per vertex.");
+                NativeBridge.ReportErrorOnce("The stage 1B Mesh must provide one normal per vertex.");
                 return false;
             }
 
@@ -232,7 +367,7 @@ namespace Yutrel.OfflineRenderer
             {
                 if (mesh.GetTopology(subMesh) != MeshTopology.Triangles)
                 {
-                    NativeBridge.ReportErrorOnce("Every stage 1A Mesh submesh must use Triangle topology.");
+                    NativeBridge.ReportErrorOnce("Every stage 1B Mesh submesh must use Triangle topology.");
                     return false;
                 }
                 foreach (var index in mesh.GetIndices(subMesh))
@@ -242,14 +377,14 @@ namespace Yutrel.OfflineRenderer
             }
             if (indices.Count == 0 || indices.Count % 3 != 0)
             {
-                NativeBridge.ReportErrorOnce("The stage 1A Mesh has no valid triangle indices.");
+                NativeBridge.ReportErrorOnce("The stage 1B Mesh has no valid triangle indices.");
                 return false;
             }
 
             var lightDirection = -selectedLight.transform.forward;
             if (lightDirection.sqrMagnitude < 1e-12f)
             {
-                NativeBridge.ReportErrorOnce("The stage 1A Directional Light direction is invalid.");
+                NativeBridge.ReportErrorOnce("The stage 1B Directional Light direction is invalid.");
                 return false;
             }
             lightDirection.Normalize();

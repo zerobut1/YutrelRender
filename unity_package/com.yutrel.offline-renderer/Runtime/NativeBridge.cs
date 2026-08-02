@@ -9,7 +9,7 @@ namespace Yutrel.OfflineRenderer
     internal static class NativeBridge
     {
         private const string LibraryName = "YutrelUnityPlugin";
-        private const uint AbiVersion = 1;
+        private const uint AbiVersion = 3;
         private const int ClearEventId = 0;
         private const int PathTraceEventId = 1;
 
@@ -57,6 +57,8 @@ namespace Yutrel.OfflineRenderer
             public IntPtr output;
             public uint width;
             public uint height;
+            public uint viewId;
+            public uint flipOutputY;
 
             [MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)]
             public float[] cameraToWorld;
@@ -204,6 +206,8 @@ namespace Yutrel.OfflineRenderer
             ComputeCommandBuffer commandBuffer,
             IntPtr output,
             Vector2Int size,
+            uint viewId,
+            bool flipOutputY,
             Matrix4x4 cameraToWorld,
             float verticalFovDegrees,
             float preExposure,
@@ -223,6 +227,8 @@ namespace Yutrel.OfflineRenderer
                 output = output,
                 width = (uint)size.x,
                 height = (uint)size.y,
+                viewId = viewId,
+                flipOutputY = flipOutputY ? 1u : 0u,
                 cameraToWorld = ToColumnMajor(cameraToWorld),
                 verticalFovDegrees = verticalFovDegrees,
                 preExposure = preExposure,

@@ -12,6 +12,8 @@ namespace Yutrel.OfflineRenderer
         private TextureHandle output;
         private IntPtr outputPointer;
         private Vector2Int size;
+        private uint viewId;
+        private bool flipOutputY;
         private Matrix4x4 cameraToWorld;
         private float verticalFovDegrees;
         private float preExposure;
@@ -22,6 +24,8 @@ namespace Yutrel.OfflineRenderer
             TextureHandle output,
             IntPtr outputPointer,
             Vector2Int size,
+            uint viewId,
+            bool flipOutputY,
             Matrix4x4 cameraToWorld,
             float verticalFovDegrees,
             float preExposure,
@@ -35,6 +39,8 @@ namespace Yutrel.OfflineRenderer
             pass.output = output;
             pass.outputPointer = outputPointer;
             pass.size = size;
+            pass.viewId = viewId;
+            pass.flipOutputY = flipOutputY;
             pass.cameraToWorld = cameraToWorld;
             pass.verticalFovDegrees = verticalFovDegrees;
             pass.preExposure = preExposure;
@@ -49,6 +55,8 @@ namespace Yutrel.OfflineRenderer
                     context.cmd,
                     data.outputPointer,
                     data.size,
+                    data.viewId,
+                    data.flipOutputY,
                     data.cameraToWorld,
                     data.verticalFovDegrees,
                     data.preExposure,
