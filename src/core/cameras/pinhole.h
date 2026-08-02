@@ -29,6 +29,11 @@ class PinholeCamera final : public Camera
         Instance(Renderer& renderer, CommandBuffer& command_buffer, const PinholeCamera* camera, const Film* film, const Filter* filter) noexcept;
         ~Instance() noexcept override = default;
 
+        [[nodiscard]] bool set_external_projection(
+            CommandBuffer& command_buffer,
+            uint2 resolution,
+            float vertical_fov_degrees) noexcept override;
+
     private:
         [[nodiscard]] Var<Ray> generate_ray_in_camera_space(Expr<float2> pixel, Expr<float> time, Expr<float2> u_lens) const noexcept override;
     };

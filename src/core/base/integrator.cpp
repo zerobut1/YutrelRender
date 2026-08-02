@@ -39,6 +39,67 @@ ProgressiveIntegrator::Instance::Instance(Renderer& renderer, CommandBuffer& com
 {
 }
 
+bool ProgressiveIntegrator::Instance::prepare_external_render() noexcept
+{
+    if (_external_render)
+    {
+        return true;
+    }
+    try
+    {
+        auto camera = renderer().camera();
+        Kernel2D render_kernel = [&](ImageFloat accumulation, UInt sample_index) noexcept
+        {
+            set_block_size(16u, 16u, 1u);
+            auto pixel_id = dispatch_id().xy();
+            auto L        = Li(camera, sample_index, pixel_id, 0.0f);
+            auto invalid  = any(compute::isnan(L)) | any(compute::isinf(L));
+            L             = ite(invalid, make_float3(0.0f), L);
+
+            auto previous = accumulation.read(pixel_id);
+            accumulation.write(pixel_id, previous + make_float4(L, 1.0f));
+        };
+        LUISA_INFO("Start compiling external Integrator shader.");
+        Clock clock_compile;
+        _external_render = renderer().device().compile(render_kernel);
+        LUISA_INFO("External Integrator shader compiled in {} ms.", clock_compile.toc());
+        return static_cast<bool>(_external_render);
+    }
+    catch (const std::exception& exception)
+    {
+        LUISA_WARNING_WITH_LOCATION("Failed to compile external Integrator shader: {}", exception.what());
+    }
+    catch (...)
+    {
+        LUISA_WARNING_WITH_LOCATION("Failed to compile external Integrator shader.");
+    }
+    return false;
+}
+
+void ProgressiveIntegrator::Instance::reset_external_sampler(
+    CommandBuffer& command_buffer,
+    uint2 resolution) noexcept
+{
+    sampler()->reset(command_buffer, resolution, resolution.x * resolution.y);
+}
+
+bool ProgressiveIntegrator::Instance::render_external_sample(
+    CommandBuffer& command_buffer,
+    ImageView<float> accumulation,
+    uint2 resolution,
+    uint sample_index) noexcept
+{
+    auto accumulation_size = accumulation.size();
+    if (!_external_render ||
+        accumulation_size.x != resolution.x || accumulation_size.y != resolution.y ||
+        accumulation.storage() != PixelStorage::FLOAT4)
+    {
+        return false;
+    }
+    command_buffer << _external_render(accumulation, sample_index).dispatch(resolution);
+    return true;
+}
+
 void ProgressiveIntegrator::Instance::render(Stream& stream, bool enable_display)
 {
     CommandBuffer command_buffer{stream};

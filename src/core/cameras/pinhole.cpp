@@ -23,10 +23,29 @@ PinholeCamera::Instance::Instance(Renderer& renderer, CommandBuffer& command_buf
       m_device_data(renderer.arena_buffer<PinholeCameraData>(1u))
 {
     PinholeCameraData host_data{make_float2(this->film()->base()->resolution()), tan(camera->m_fov * 0.5f)};
-    m_device_data = renderer.arena_buffer<PinholeCameraData>(1u);
     command_buffer
         << m_device_data.copy_from(&host_data)
         << commit();
+}
+
+bool PinholeCamera::Instance::set_external_projection(
+    CommandBuffer& command_buffer,
+    uint2 resolution,
+    float vertical_fov_degrees) noexcept
+{
+    if (resolution.x == 0u || resolution.y == 0u ||
+        !std::isfinite(vertical_fov_degrees) ||
+        vertical_fov_degrees <= 0.0f || vertical_fov_degrees >= 180.0f)
+    {
+        return false;
+    }
+    PinholeCameraData host_data{
+        make_float2(resolution),
+        tan(radians(vertical_fov_degrees) * 0.5f)};
+    command_buffer
+        << m_device_data.copy_from(luisa::span{&host_data, 1u})
+        << commit();
+    return true;
 }
 
 const Camera* PinholeCameraSpec::build(SceneBuilder& builder) const noexcept

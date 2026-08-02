@@ -70,6 +70,10 @@ public:
         [[nodiscard]] auto camera_to_world() const noexcept { return m_host_camera_to_world; }
 
         void set_camera_to_world(CommandBuffer& command_buffer, const float4x4& camera_to_world) noexcept;
+        [[nodiscard]] virtual bool set_external_projection(
+            CommandBuffer& command_buffer,
+            uint2 resolution,
+            float vertical_fov_degrees) noexcept;
         [[nodiscard]] Sample generate_ray(Expr<uint2> pixel_coord, Expr<float> time, Expr<float2> u_filter, Expr<float2> u_lens) const noexcept;
 
     private:

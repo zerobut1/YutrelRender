@@ -1,5 +1,8 @@
 #include "renderer.h"
 
+#include <cmath>
+#include <limits>
+
 #include <luisa/luisa-compute.h>
 
 #include "base/camera.h"
@@ -120,6 +123,53 @@ void Renderer::render(Stream& stream, bool enable_display)
 void Renderer::render_interactive(Stream& stream)
 {
     m_integrator->render_interactive(stream);
+}
+
+bool Renderer::prepare_external_render() noexcept
+{
+    auto integrator = dynamic_cast<ProgressiveIntegrator::Instance*>(m_integrator.get());
+    return integrator != nullptr && integrator->prepare_external_render();
+}
+
+bool Renderer::update_external_camera(
+    CommandBuffer& command_buffer,
+    const ExternalCameraState& state) noexcept
+{
+    auto pixel_count = static_cast<uint64_t>(state.resolution.x) * state.resolution.y;
+    if (state.resolution.x == 0u || state.resolution.y == 0u ||
+        pixel_count > std::numeric_limits<uint>::max() ||
+        !std::isfinite(state.vertical_fov_degrees) ||
+        state.vertical_fov_degrees <= 0.0f || state.vertical_fov_degrees >= 180.0f ||
+        validate_camera_to_world(state.camera_to_world))
+    {
+        return false;
+    }
+    auto integrator = dynamic_cast<ProgressiveIntegrator::Instance*>(m_integrator.get());
+    if (integrator == nullptr ||
+        !m_camera->set_external_projection(
+            command_buffer,
+            state.resolution,
+            state.vertical_fov_degrees))
+    {
+        return false;
+    }
+    m_camera->set_camera_to_world(command_buffer, state.camera_to_world);
+    integrator->reset_external_sampler(command_buffer, state.resolution);
+    return true;
+}
+
+bool Renderer::render_external_sample(
+    CommandBuffer& command_buffer,
+    ImageView<float> accumulation,
+    uint2 resolution,
+    uint sample_index) noexcept
+{
+    auto integrator = dynamic_cast<ProgressiveIntegrator::Instance*>(m_integrator.get());
+    return integrator != nullptr && integrator->render_external_sample(
+                                        command_buffer,
+                                        accumulation,
+                                        resolution,
+                                        sample_index);
 }
 
 void Renderer::reset_diagnostics(CommandBuffer& command_buffer) noexcept

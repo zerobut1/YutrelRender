@@ -61,11 +61,22 @@ class ProgressiveIntegrator : public Integrator
 public:
     class Instance : public Integrator::Instance
     {
+    private:
+        Shader2D<Image<float>, uint> _external_render;
+
     public:
         Instance(Renderer& renderer, CommandBuffer& command_buffer, const ProgressiveIntegrator* integrator, const Sampler* sampler) noexcept;
 
         void render(Stream& stream, bool enable_display) override;
         void render_interactive(Stream& stream) override;
+
+        [[nodiscard]] bool prepare_external_render() noexcept;
+        void reset_external_sampler(CommandBuffer& command_buffer, uint2 resolution) noexcept;
+        [[nodiscard]] bool render_external_sample(
+            CommandBuffer& command_buffer,
+            ImageView<float> accumulation,
+            uint2 resolution,
+            uint sample_index) noexcept;
 
     protected:
         [[nodiscard]] uint max_depth() const noexcept { return base<ProgressiveIntegrator>()->max_depth(); }

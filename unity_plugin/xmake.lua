@@ -13,7 +13,7 @@ target("YutrelUnityPlugin")
     add_includedirs("src")
     add_defines("NOMINMAX", "WIN32_LEAN_AND_MEAN")
 
-    add_deps("lc-runtime", "lc-dsl", "lc-vstl")
+    add_deps("YutrelCore", "lc-runtime", "lc-dsl", "lc-vstl")
     add_deps("lc-backend-dx", {inherit = false, links = false})
     add_syslinks("d3d12", "dxgi")
 
@@ -47,6 +47,9 @@ target("YutrelUnityPlugin")
             {path.join(target_dir, "luisa-core.dll"), "luisa-core.dll"},
             {path.join(target_dir, "luisa-runtime.dll"), "luisa-runtime.dll"},
             {path.join(target_dir, "luisa-backend-dx.dll"), "luisa-backend-dx.dll"},
+            {path.join(target_dir, "luisa-gui.dll"), "luisa-gui.dll"},
+            {path.join(target_dir, "luisa-ext-imgui.dll"), "luisa-ext-imgui.dll"},
+            {path.join(target_dir, "luisa-ext-glfw.dll"), "luisa-ext-glfw.dll"},
             {path.join(unity_editor_dir, "Data", "Tools", "dxcompiler.dll"), "dxcompiler.dll"},
             {path.join(unity_editor_dir, "Data", "Tools", "dxil.dll"), "dxil.dll"},
         }

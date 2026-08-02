@@ -183,6 +183,17 @@ void Camera::Instance::set_camera_to_world(CommandBuffer& command_buffer, const 
         << commit();
 }
 
+bool Camera::Instance::set_external_projection(
+    CommandBuffer& command_buffer,
+    uint2 resolution,
+    float vertical_fov_degrees) noexcept
+{
+    static_cast<void>(command_buffer);
+    static_cast<void>(resolution);
+    static_cast<void>(vertical_fov_degrees);
+    return false;
+}
+
 Camera::Sample Camera::Instance::generate_ray(Expr<uint2> pixel_coord, Expr<float> time, Expr<float2> u_filter, Expr<float2> u_lens) const noexcept
 {
     auto [filter_offset, filter_weight] = m_filter->sample(u_filter);

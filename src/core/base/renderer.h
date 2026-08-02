@@ -35,6 +35,13 @@ struct RenderDiagnostics
     }
 };
 
+struct ExternalCameraState
+{
+    float4x4 camera_to_world;
+    uint2 resolution;
+    float vertical_fov_degrees;
+};
+
 class Renderer final
 {
 private:
@@ -155,6 +162,16 @@ public:
 
     void render(Stream& stream, bool enable_display);
     void render_interactive(Stream& stream);
+
+    [[nodiscard]] bool prepare_external_render() noexcept;
+    [[nodiscard]] bool update_external_camera(
+        CommandBuffer& command_buffer,
+        const ExternalCameraState& state) noexcept;
+    [[nodiscard]] bool render_external_sample(
+        CommandBuffer& command_buffer,
+        ImageView<float> accumulation,
+        uint2 resolution,
+        uint sample_index) noexcept;
 
     void reset_diagnostics(CommandBuffer& command_buffer) noexcept;
     void download_diagnostics(CommandBuffer& command_buffer, std::array<uint, diagnostic_count>& values) const noexcept;
