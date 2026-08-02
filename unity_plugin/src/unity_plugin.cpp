@@ -37,7 +37,7 @@ namespace yutrel::unity {
 using namespace luisa;
 using namespace luisa::compute;
 
-constexpr uint32_t abi_version = 3u;
+constexpr uint32_t abi_version = 4u;
 constexpr int clear_event_id = 0;
 constexpr int path_trace_event_id = 1;
 
@@ -47,15 +47,21 @@ struct ClearEventData {
     ID3D12Resource *output;
 };
 
-struct StaticSceneData {
-    uint32_t abi_version;
-    uint32_t struct_size;
+struct StaticMeshData {
     const float *positions;
     const float *normals;
     const uint32_t *indices;
     uint32_t vertex_count;
     uint32_t index_count;
     float local_to_world[16];
+};
+
+struct StaticSceneData {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    const StaticMeshData *meshes;
+    uint32_t mesh_count;
+    uint32_t mesh_struct_size;
     float light_color[3];
     float light_intensity;
     float light_direction[3];
@@ -111,11 +117,15 @@ namespace {
     return true;
 }
 
-struct StaticSceneSnapshot {
+struct StaticMeshSnapshot {
     luisa::vector<float3> positions;
     luisa::vector<float3> normals;
     luisa::vector<uint3> triangles;
     float4x4 local_to_world;
+};
+
+struct StaticSceneSnapshot {
+    luisa::vector<StaticMeshSnapshot> meshes;
     float3 light_color;
     float light_intensity;
     float3 light_direction;
@@ -123,45 +133,60 @@ struct StaticSceneSnapshot {
 
 [[nodiscard]] luisa::unique_ptr<StaticSceneSnapshot>
 copy_static_scene(const StaticSceneData &data) {
-    if (data.positions == nullptr || data.normals == nullptr || data.indices == nullptr ||
-        data.vertex_count == 0u || data.index_count == 0u || data.index_count % 3u != 0u) {
+    if (data.meshes == nullptr || data.mesh_count == 0u ||
+        data.mesh_struct_size != sizeof(StaticMeshData)) {
         return nullptr;
     }
 
     auto snapshot = luisa::make_unique<StaticSceneSnapshot>();
-    snapshot->positions.reserve(data.vertex_count);
-    snapshot->normals.reserve(data.vertex_count);
-    for (auto i = 0u; i < data.vertex_count; i++) {
-        auto position = make_float3(
-            data.positions[i * 3u],
-            data.positions[i * 3u + 1u],
-            data.positions[i * 3u + 2u]);
-        auto normal = make_float3(
-            data.normals[i * 3u],
-            data.normals[i * 3u + 1u],
-            data.normals[i * 3u + 2u]);
-        auto normal_length_squared = dot(normal, normal);
-        if (!finite(position) || !finite(normal) ||
-            !std::isfinite(normal_length_squared) || normal_length_squared < 1e-12f) {
+    snapshot->meshes.reserve(data.mesh_count);
+    for (auto mesh_index = 0u; mesh_index < data.mesh_count; mesh_index++) {
+        auto &&data_mesh = data.meshes[mesh_index];
+        if (data_mesh.positions == nullptr || data_mesh.normals == nullptr ||
+            data_mesh.indices == nullptr || data_mesh.vertex_count == 0u ||
+            data_mesh.index_count == 0u || data_mesh.index_count % 3u != 0u) {
             return nullptr;
         }
-        snapshot->positions.emplace_back(position);
-        snapshot->normals.emplace_back(normalize(normal));
-    }
 
-    snapshot->triangles.reserve(data.index_count / 3u);
-    for (auto i = 0u; i < data.index_count; i += 3u) {
-        auto triangle = make_uint3(data.indices[i], data.indices[i + 1u], data.indices[i + 2u]);
-        if (triangle.x >= data.vertex_count ||
-            triangle.y >= data.vertex_count || triangle.z >= data.vertex_count) {
+        StaticMeshSnapshot mesh;
+        mesh.positions.reserve(data_mesh.vertex_count);
+        mesh.normals.reserve(data_mesh.vertex_count);
+        for (auto i = 0u; i < data_mesh.vertex_count; i++) {
+            auto position = make_float3(
+                data_mesh.positions[i * 3u],
+                data_mesh.positions[i * 3u + 1u],
+                data_mesh.positions[i * 3u + 2u]);
+            auto normal = make_float3(
+                data_mesh.normals[i * 3u],
+                data_mesh.normals[i * 3u + 1u],
+                data_mesh.normals[i * 3u + 2u]);
+            auto normal_length_squared = dot(normal, normal);
+            if (!finite(position) || !finite(normal) ||
+                !std::isfinite(normal_length_squared) || normal_length_squared < 1e-12f) {
+                return nullptr;
+            }
+            mesh.positions.emplace_back(position);
+            mesh.normals.emplace_back(normalize(normal));
+        }
+
+        mesh.triangles.reserve(data_mesh.index_count / 3u);
+        for (auto i = 0u; i < data_mesh.index_count; i += 3u) {
+            auto triangle = make_uint3(
+                data_mesh.indices[i],
+                data_mesh.indices[i + 1u],
+                data_mesh.indices[i + 2u]);
+            if (triangle.x >= data_mesh.vertex_count ||
+                triangle.y >= data_mesh.vertex_count || triangle.z >= data_mesh.vertex_count) {
+                return nullptr;
+            }
+            mesh.triangles.emplace_back(triangle);
+        }
+
+        mesh.local_to_world = load_matrix(data_mesh.local_to_world);
+        if (Yutrel::validate_camera_to_world(mesh.local_to_world)) {
             return nullptr;
         }
-        snapshot->triangles.emplace_back(triangle);
-    }
-
-    snapshot->local_to_world = load_matrix(data.local_to_world);
-    if (Yutrel::validate_camera_to_world(snapshot->local_to_world)) {
-        return nullptr;
+        snapshot->meshes.emplace_back(std::move(mesh));
     }
 
     snapshot->light_color = make_float3(
@@ -195,12 +220,6 @@ copy_static_scene(const StaticSceneData &data) {
     auto emission = builder.add_anonymous_texture<ConstantTextureSpec>(
         source, make_float4(snapshot.light_color, 1.0f));
     auto surface = builder.add_anonymous_surface<DiffuseSurfaceSpec>(source, albedo, true);
-    auto shape = builder.add_anonymous_shape<InlineMeshShapeSpec>(
-        source,
-        std::move(snapshot.positions),
-        std::move(snapshot.normals),
-        luisa::vector<float2>{},
-        std::move(snapshot.triangles));
     auto spectrum = builder.add_anonymous_spectrum<SRGBSpectrumSpec>(source);
     auto environment = builder.add_anonymous_environment<DistantEnvironmentSpec>(
         source,
@@ -222,12 +241,20 @@ copy_static_scene(const StaticSceneData &data) {
     auto filter = builder.add_anonymous_filter<BoxFilterSpec>(source, 0.5f);
     auto sampler = builder.add_anonymous_sampler<IndependentSamplerSpec>(source, 1u, 0u);
     auto integrator = builder.add_anonymous_integrator<PathIntegratorSpec>(source, 4u);
-    builder.add_instance(ShapeInstanceSpec{
-        .source = source,
-        .shape = shape,
-        .surface = surface,
-        .transform = snapshot.local_to_world,
-    });
+    for (auto &&mesh : snapshot.meshes) {
+        auto shape = builder.add_anonymous_shape<InlineMeshShapeSpec>(
+            source,
+            std::move(mesh.positions),
+            std::move(mesh.normals),
+            luisa::vector<float2>{},
+            std::move(mesh.triangles));
+        builder.add_instance(ShapeInstanceSpec{
+            .source = source,
+            .shape = shape,
+            .surface = surface,
+            .transform = mesh.local_to_world,
+        });
+    }
     builder.set_render(RenderSpec{
         .spectrum = spectrum,
         .environment = environment,

@@ -33,12 +33,26 @@ namespace
     auto emission = builder.add_anonymous_texture<ConstantTextureSpec>(
         source, make_float4(1.0f));
     auto surface = builder.add_anonymous_surface<DiffuseSurfaceSpec>(source, albedo, true);
-    auto shape = builder.add_anonymous_shape<InlineMeshShapeSpec>(
+    auto left_shape = builder.add_anonymous_shape<InlineMeshShapeSpec>(
         source,
-        luisa::vector{make_float3(-1.0f, -1.0f, -3.0f), make_float3(1.0f, -1.0f, -3.0f), make_float3(0.0f, 1.0f, -3.0f)},
-        luisa::vector(3u, make_float3(0.0f, 0.0f, 1.0f)),
+        luisa::vector{
+            make_float3(-0.5f, -0.7f, -3.0f),
+            make_float3(0.5f, -0.7f, -3.0f),
+            make_float3(0.5f, 0.7f, -3.0f),
+            make_float3(-0.5f, 0.7f, -3.0f)},
+        luisa::vector(4u, make_float3(0.0f, 0.0f, 1.0f)),
         luisa::vector<float2>{},
-        luisa::vector{make_uint3(0u, 1u, 2u)});
+        luisa::vector{make_uint3(0u, 1u, 2u), make_uint3(0u, 2u, 3u)});
+    auto right_shape = builder.add_anonymous_shape<InlineMeshShapeSpec>(
+        source,
+        luisa::vector{
+            make_float3(-0.5f, -0.55f, -3.0f),
+            make_float3(0.5f, -0.55f, -3.0f),
+            make_float3(0.5f, 0.55f, -3.0f),
+            make_float3(-0.5f, 0.55f, -3.0f)},
+        luisa::vector(4u, make_float3(0.0f, 0.0f, 1.0f)),
+        luisa::vector<float2>{},
+        luisa::vector{make_uint3(0u, 1u, 2u), make_uint3(0u, 2u, 3u)});
     auto spectrum = builder.add_anonymous_spectrum<SRGBSpectrumSpec>(source);
     auto environment = builder.add_anonymous_environment<DistantEnvironmentSpec>(
         source, emission, 1.0f, make_float3(0.0f, 0.0f, 1.0f));
@@ -53,10 +67,21 @@ namespace
     auto filter = builder.add_anonymous_filter<BoxFilterSpec>(source, 0.5f);
     auto sampler = builder.add_anonymous_sampler<IndependentSamplerSpec>(source, 1u, 0u);
     auto integrator = builder.add_anonymous_integrator<PathIntegratorSpec>(source, 4u);
+    auto left_transform = make_float4x4(1.0f);
+    left_transform[3] = make_float4(-0.6f, 0.0f, 0.0f, 1.0f);
+    auto right_transform = make_float4x4(1.0f);
+    right_transform[3] = make_float4(0.6f, 0.0f, 0.0f, 1.0f);
     builder.add_instance(ShapeInstanceSpec{
         .source = source,
-        .shape = shape,
+        .shape = left_shape,
         .surface = surface,
+        .transform = left_transform,
+    });
+    builder.add_instance(ShapeInstanceSpec{
+        .source = source,
+        .shape = right_shape,
+        .surface = surface,
+        .transform = right_transform,
     });
     builder.set_render(RenderSpec{
         .spectrum = spectrum,
@@ -96,18 +121,23 @@ namespace
     luisa::vector<float4> pixels(static_cast<size_t>(resolution.x) * resolution.y);
     commands << accumulation.copy_to(luisa::span{pixels}) << synchronize();
 
-    auto has_radiance = false;
-    for (auto pixel : pixels)
+    auto left_has_radiance = false;
+    auto right_has_radiance = false;
+    for (auto pixel_index = 0u; pixel_index < pixels.size(); pixel_index++)
     {
+        auto pixel = pixels[pixel_index];
         if (!std::isfinite(pixel.x) || !std::isfinite(pixel.y) ||
             !std::isfinite(pixel.z) || !std::isfinite(pixel.w) ||
             pixel.w != static_cast<float>(sample_count))
         {
             return false;
         }
-        has_radiance |= pixel.x > 0.0f || pixel.y > 0.0f || pixel.z > 0.0f;
+        auto has_radiance = pixel.x > 0.0f || pixel.y > 0.0f || pixel.z > 0.0f;
+        auto x = pixel_index % resolution.x;
+        left_has_radiance |= has_radiance && x < resolution.x / 2u;
+        right_has_radiance |= has_radiance && x >= resolution.x / 2u;
     }
-    return has_radiance;
+    return left_has_radiance && right_has_radiance;
 }
 
 [[nodiscard]] bool has_sample_count(

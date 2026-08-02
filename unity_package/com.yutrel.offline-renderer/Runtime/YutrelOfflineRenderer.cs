@@ -307,9 +307,7 @@ namespace Yutrel.OfflineRenderer
 
         private static bool TryUploadStaticScene()
         {
-            MeshFilter selectedFilter = null;
-            MeshRenderer selectedRenderer = null;
-            var meshCount = 0;
+            var meshes = new List<NativeBridge.StaticMeshUpload>();
             foreach (var filter in UnityEngine.Object.FindObjectsByType<MeshFilter>(
                          FindObjectsInactive.Exclude))
             {
@@ -318,14 +316,61 @@ namespace Yutrel.OfflineRenderer
                 {
                     continue;
                 }
-                selectedFilter = filter;
-                selectedRenderer = meshRenderer;
-                meshCount++;
+
+                var mesh = filter.sharedMesh;
+                var objectName = filter.gameObject.name;
+                if (mesh == null || !mesh.isReadable)
+                {
+                    NativeBridge.ReportErrorOnce(
+                        $"Yutrel static Mesh '{objectName}' must exist and have Read/Write enabled.");
+                    return false;
+                }
+                var vertices = mesh.vertices;
+                var normals = mesh.normals;
+                if (vertices.Length == 0 || normals.Length != vertices.Length)
+                {
+                    NativeBridge.ReportErrorOnce(
+                        $"Yutrel static Mesh '{objectName}' must provide one normal per vertex.");
+                    return false;
+                }
+
+                var indices = new List<uint>();
+                for (var subMesh = 0; subMesh < mesh.subMeshCount; subMesh++)
+                {
+                    if (mesh.GetTopology(subMesh) != MeshTopology.Triangles)
+                    {
+                        NativeBridge.ReportErrorOnce(
+                            $"Every submesh of Yutrel static Mesh '{objectName}' must use Triangle topology.");
+                        return false;
+                    }
+                    foreach (var index in mesh.GetIndices(subMesh, true))
+                    {
+                        if ((uint)index >= (uint)vertices.Length)
+                        {
+                            NativeBridge.ReportErrorOnce(
+                                $"Yutrel static Mesh '{objectName}' contains an out-of-range index.");
+                            return false;
+                        }
+                        indices.Add((uint)index);
+                    }
+                }
+                if (indices.Count == 0 || indices.Count % 3 != 0)
+                {
+                    NativeBridge.ReportErrorOnce(
+                        $"Yutrel static Mesh '{objectName}' has no valid triangle indices.");
+                    return false;
+                }
+
+                meshes.Add(new NativeBridge.StaticMeshUpload(
+                    vertices,
+                    normals,
+                    indices.ToArray(),
+                    filter.transform.localToWorldMatrix));
             }
-            if (meshCount != 1 || selectedFilter == null || selectedRenderer == null)
+            if (meshes.Count == 0)
             {
                 NativeBridge.ReportErrorOnce(
-                    $"Yutrel Offline Renderer stage 1B requires exactly one enabled MeshFilter + MeshRenderer; found {meshCount}.");
+                    "Yutrel Offline Renderer requires at least one enabled MeshFilter + MeshRenderer.");
                 return false;
             }
 
@@ -344,55 +389,19 @@ namespace Yutrel.OfflineRenderer
             if (lightCount != 1 || selectedLight == null)
             {
                 NativeBridge.ReportErrorOnce(
-                    $"Yutrel Offline Renderer stage 1B requires exactly one enabled Directional Light; found {lightCount}.");
-                return false;
-            }
-
-            var mesh = selectedFilter.sharedMesh;
-            if (mesh == null || !mesh.isReadable)
-            {
-                NativeBridge.ReportErrorOnce("The stage 1B Mesh must exist and have Read/Write enabled.");
-                return false;
-            }
-            var vertices = mesh.vertices;
-            var normals = mesh.normals;
-            if (vertices.Length == 0 || normals.Length != vertices.Length)
-            {
-                NativeBridge.ReportErrorOnce("The stage 1B Mesh must provide one normal per vertex.");
-                return false;
-            }
-
-            var indices = new List<uint>();
-            for (var subMesh = 0; subMesh < mesh.subMeshCount; subMesh++)
-            {
-                if (mesh.GetTopology(subMesh) != MeshTopology.Triangles)
-                {
-                    NativeBridge.ReportErrorOnce("Every stage 1B Mesh submesh must use Triangle topology.");
-                    return false;
-                }
-                foreach (var index in mesh.GetIndices(subMesh))
-                {
-                    indices.Add((uint)index);
-                }
-            }
-            if (indices.Count == 0 || indices.Count % 3 != 0)
-            {
-                NativeBridge.ReportErrorOnce("The stage 1B Mesh has no valid triangle indices.");
+                    $"Yutrel Offline Renderer requires exactly one enabled Directional Light; found {lightCount}.");
                 return false;
             }
 
             var lightDirection = -selectedLight.transform.forward;
             if (lightDirection.sqrMagnitude < 1e-12f)
             {
-                NativeBridge.ReportErrorOnce("The stage 1B Directional Light direction is invalid.");
+                NativeBridge.ReportErrorOnce("The Yutrel Directional Light direction is invalid.");
                 return false;
             }
             lightDirection.Normalize();
             return NativeBridge.SetStaticScene(
-                vertices,
-                normals,
-                indices.ToArray(),
-                selectedFilter.transform.localToWorldMatrix,
+                meshes,
                 selectedLight.color.linear,
                 selectedLight.intensity,
                 lightDirection);

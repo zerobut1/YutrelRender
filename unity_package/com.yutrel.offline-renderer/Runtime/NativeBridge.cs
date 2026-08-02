@@ -9,7 +9,7 @@ namespace Yutrel.OfflineRenderer
     internal static class NativeBridge
     {
         private const string LibraryName = "YutrelUnityPlugin";
-        private const uint AbiVersion = 3;
+        private const uint AbiVersion = 4;
         private const int ClearEventId = 0;
         private const int PathTraceEventId = 1;
 
@@ -27,26 +27,47 @@ namespace Yutrel.OfflineRenderer
         }
 
         [StructLayout(LayoutKind.Sequential)]
-        private struct StaticSceneData
+        private unsafe struct StaticMeshData
         {
-            public uint abiVersion;
-            public uint structSize;
             public IntPtr positions;
             public IntPtr normals;
             public IntPtr indices;
             public uint vertexCount;
             public uint indexCount;
+            public fixed float localToWorld[16];
+        }
 
-            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)]
-            public float[] localToWorld;
-
-            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 3)]
-            public float[] lightColor;
-
+        [StructLayout(LayoutKind.Sequential)]
+        private unsafe struct StaticSceneData
+        {
+            public uint abiVersion;
+            public uint structSize;
+            public IntPtr meshes;
+            public uint meshCount;
+            public uint meshStructSize;
+            public fixed float lightColor[3];
             public float lightIntensity;
+            public fixed float lightDirection[3];
+        }
 
-            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 3)]
-            public float[] lightDirection;
+        internal readonly struct StaticMeshUpload
+        {
+            internal readonly Vector3[] positions;
+            internal readonly Vector3[] normals;
+            internal readonly uint[] indices;
+            internal readonly Matrix4x4 localToWorld;
+
+            internal StaticMeshUpload(
+                Vector3[] positions,
+                Vector3[] normals,
+                uint[] indices,
+                Matrix4x4 localToWorld)
+            {
+                this.positions = positions;
+                this.normals = normals;
+                this.indices = indices;
+                this.localToWorld = localToWorld;
+            }
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -156,44 +177,92 @@ namespace Yutrel.OfflineRenderer
         }
 
         internal static unsafe bool SetStaticScene(
-            Vector3[] positions,
-            Vector3[] normals,
-            uint[] indices,
-            Matrix4x4 localToWorld,
+            IReadOnlyList<StaticMeshUpload> meshes,
             Color lightColor,
             float lightIntensity,
             Vector3 lightDirection)
         {
 #if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
-            if (renderEvent == IntPtr.Zero || positions == null || normals == null || indices == null)
+            if (renderEvent == IntPtr.Zero || meshes == null || meshes.Count == 0)
             {
                 ReportErrorOnce("Yutrel static scene upload has invalid data.");
                 return false;
             }
 
-            fixed (Vector3* positionPointer = positions)
-            fixed (Vector3* normalPointer = normals)
-            fixed (uint* indexPointer = indices)
+            var descriptors = new StaticMeshData[meshes.Count];
+            var pinnedArrays = new GCHandle[meshes.Count * 3];
+            var pinnedCount = 0;
+            try
             {
-                var data = new StaticSceneData
+                for (var meshIndex = 0; meshIndex < meshes.Count; meshIndex++)
                 {
-                    abiVersion = AbiVersion,
-                    structSize = (uint)Marshal.SizeOf<StaticSceneData>(),
-                    positions = (IntPtr)positionPointer,
-                    normals = (IntPtr)normalPointer,
-                    indices = (IntPtr)indexPointer,
-                    vertexCount = (uint)positions.Length,
-                    indexCount = (uint)indices.Length,
-                    localToWorld = ToColumnMajor(localToWorld),
-                    lightColor = new[] { lightColor.r, lightColor.g, lightColor.b },
-                    lightIntensity = lightIntensity,
-                    lightDirection = new[] { lightDirection.x, lightDirection.y, lightDirection.z }
-                };
-                var result = YutrelUnitySetStaticScene(ref data);
-                if (result != 0)
+                    var mesh = meshes[meshIndex];
+                    if (mesh.positions == null || mesh.normals == null || mesh.indices == null ||
+                        mesh.positions.Length == 0 || mesh.normals.Length != mesh.positions.Length ||
+                        mesh.indices.Length == 0)
+                    {
+                        ReportErrorOnce("Yutrel static scene upload contains an invalid Mesh.");
+                        return false;
+                    }
+
+                    pinnedArrays[pinnedCount] = GCHandle.Alloc(mesh.positions, GCHandleType.Pinned);
+                    var positions = pinnedArrays[pinnedCount++].AddrOfPinnedObject();
+                    pinnedArrays[pinnedCount] = GCHandle.Alloc(mesh.normals, GCHandleType.Pinned);
+                    var normals = pinnedArrays[pinnedCount++].AddrOfPinnedObject();
+                    pinnedArrays[pinnedCount] = GCHandle.Alloc(mesh.indices, GCHandleType.Pinned);
+                    var indices = pinnedArrays[pinnedCount++].AddrOfPinnedObject();
+
+                    var descriptor = new StaticMeshData
+                    {
+                        positions = positions,
+                        normals = normals,
+                        indices = indices,
+                        vertexCount = (uint)mesh.positions.Length,
+                        indexCount = (uint)mesh.indices.Length
+                    };
+                    var localToWorld = ToColumnMajor(mesh.localToWorld);
+                    for (var i = 0; i < localToWorld.Length; i++)
+                    {
+                        descriptor.localToWorld[i] = localToWorld[i];
+                    }
+                    descriptors[meshIndex] = descriptor;
+                }
+
+                fixed (StaticMeshData* meshPointer = descriptors)
                 {
-                    ReportErrorOnce($"Yutrel static scene upload failed with code {result}.");
-                    return false;
+                    var data = new StaticSceneData
+                    {
+                        abiVersion = AbiVersion,
+                        structSize = (uint)sizeof(StaticSceneData),
+                        meshes = (IntPtr)meshPointer,
+                        meshCount = (uint)descriptors.Length,
+                        meshStructSize = (uint)sizeof(StaticMeshData),
+                        lightIntensity = lightIntensity
+                    };
+                    data.lightColor[0] = lightColor.r;
+                    data.lightColor[1] = lightColor.g;
+                    data.lightColor[2] = lightColor.b;
+                    data.lightDirection[0] = lightDirection.x;
+                    data.lightDirection[1] = lightDirection.y;
+                    data.lightDirection[2] = lightDirection.z;
+
+                    var result = YutrelUnitySetStaticScene(ref data);
+                    if (result != 0)
+                    {
+                        ReportErrorOnce($"Yutrel static scene upload failed with code {result}.");
+                        return false;
+                    }
+                }
+            }
+            finally
+            {
+                for (var i = 0; i < pinnedCount; i++)
+                {
+                    var handle = pinnedArrays[i];
+                    if (handle.IsAllocated)
+                    {
+                        handle.Free();
+                    }
                 }
             }
             return true;
