@@ -1,0 +1,17 @@
+{
+  "name": "Yutrel.OfflineRenderer.Runtime",
+  "rootNamespace": "Yutrel.OfflineRenderer",
+  "references": [
+    "Yutrel.RenderPipelines.Yutrel.Runtime",
+    "Unity.RenderPipelines.Core.Runtime"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": true,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

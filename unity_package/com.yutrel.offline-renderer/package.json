@@ -1,0 +1,16 @@
+{
+  "name": "com.yutrel.offline-renderer",
+  "version": "0.1.0",
+  "displayName": "Yutrel Offline Renderer",
+  "description": "A LuisaCompute-based offline renderer extension for YutrelRP.",
+  "unity": "6000.5",
+  "dependencies": {
+    "com.yutrel.render-pipelines.yutrel": "0.1.0"
+  },
+  "keywords": [
+    "graphics",
+    "rendering",
+    "luisa-compute",
+    "path-tracing"
+  ]
+}

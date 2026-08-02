@@ -60,6 +60,7 @@ end
 
 includes("ext/LuisaCompute")
 includes("src")
+includes("unity_plugin")
 includes("test")
 
 -- Enable CUDA device runtime (cudadevrt) embedding for LuisaCompute CUDA backend.
