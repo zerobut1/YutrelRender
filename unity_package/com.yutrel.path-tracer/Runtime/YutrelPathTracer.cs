@@ -6,9 +6,9 @@ using UnityEngine.Rendering;
 using UnityEngine.Rendering.RenderGraphModule;
 using YutrelRP;
 
-namespace Yutrel.OfflineRenderer
+namespace Yutrel.PathTracer
 {
-    internal sealed class YutrelOfflineRenderer : YutrelRenderer
+    internal sealed class YutrelPathTracer : YutrelRenderer
     {
         private sealed class CameraResources
         {
@@ -33,7 +33,7 @@ namespace Yutrel.OfflineRenderer
                     enableRandomWrite: true,
                     filterMode: FilterMode.Bilinear,
                     wrapMode: TextureWrapMode.Clamp,
-                    name: $"Yutrel Offline Color ({camera.name})");
+                    name: $"YutrelPathTracer Color ({camera.name})");
                 return true;
             }
 
@@ -273,8 +273,8 @@ namespace Yutrel.OfflineRenderer
                     selectedLight = null;
                     NativeBridge.ReportInfoOnce(
                         directionalLightCount == 0
-                            ? "Yutrel Offline Renderer lighting is disabled until one Directional Light is enabled."
-                            : "Yutrel Offline Renderer lighting is disabled while multiple Directional Lights are enabled.");
+                            ? "YutrelPathTracer lighting is disabled until one Directional Light is enabled."
+                            : "YutrelPathTracer lighting is disabled while multiple Directional Lights are enabled.");
                 }
             }
 
@@ -773,7 +773,7 @@ namespace Yutrel.OfflineRenderer
         private readonly bool nativeAcquired;
         private uint nextNativeViewId = 1u;
 
-        internal YutrelOfflineRenderer()
+        internal YutrelPathTracer()
         {
             nativeAcquired = NativeBridge.Acquire();
             sceneChangeTracker = nativeAcquired ? new SceneChangeTracker() : null;
@@ -803,7 +803,7 @@ namespace Yutrel.OfflineRenderer
 #endif
                 default:
                     NativeBridge.ReportInfoOnce(
-                        "Yutrel Offline Renderer stage 1B only renders Game, SceneView, and Preview Cameras.");
+                        "YutrelPathTracer stage 1B only renders Game, SceneView, and Preview Cameras.");
                     return CreateBlackFallback(renderGraph, context.targetSize, context.sceneColorFormat);
             }
 
@@ -811,7 +811,7 @@ namespace Yutrel.OfflineRenderer
             if (camera.orthographic)
             {
                 NativeBridge.ReportInfoOnce(
-                    "Yutrel Offline Renderer stage 1B requires perspective Game, SceneView, and Preview Cameras.");
+                    "YutrelPathTracer stage 1B requires perspective Game, SceneView, and Preview Cameras.");
                 return CreateBlackFallback(renderGraph, context.targetSize, context.sceneColorFormat);
             }
 
@@ -827,14 +827,14 @@ namespace Yutrel.OfflineRenderer
             if (renderTexture == null || !renderTexture.IsCreated())
             {
                 NativeBridge.ReportErrorOnce(
-                    $"Yutrel Offline Renderer failed to create its {viewLabel} Camera RenderTexture.");
+                    $"YutrelPathTracer failed to create its {viewLabel} Camera RenderTexture.");
                 return CreateBlackFallback(renderGraph, context.targetSize, context.sceneColorFormat);
             }
 
             var outputPointer = renderTexture.GetNativeTexturePtr();
             if (outputPointer == IntPtr.Zero)
             {
-                NativeBridge.ReportErrorOnce("Yutrel Offline Renderer received a null native texture pointer.");
+                NativeBridge.ReportErrorOnce("YutrelPathTracer received a null native texture pointer.");
                 return CreateBlackFallback(renderGraph, context.targetSize, context.sceneColorFormat);
             }
 
@@ -856,7 +856,7 @@ namespace Yutrel.OfflineRenderer
                     discardOnLastUse = false
                 });
             var flipOutputY = SystemInfo.graphicsUVStartsAtTop;
-            OfflinePathTracePass.Record(
+            PathTracePass.Record(
                 renderGraph,
                 output,
                 outputPointer,
@@ -947,7 +947,7 @@ namespace Yutrel.OfflineRenderer
                 colorFormat = format,
                 clearBuffer = true,
                 clearColor = Color.black,
-                name = "Yutrel Offline Unavailable"
+                name = "YutrelPathTracer Unavailable"
             });
             return new YutrelRendererOutput(output);
         }

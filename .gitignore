@@ -31,4 +31,4 @@ projects/Yutrel/scenes
 scene
 *.exr
 .kimix_cache
-/unity_package/com.yutrel.offline-renderer/Runtime/Plugins/x86_64/*.dll
+/unity_package/com.yutrel.path-tracer/Runtime/Plugins/x86_64/*.dll

@@ -3,9 +3,9 @@ using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.RenderGraphModule;
 
-namespace Yutrel.OfflineRenderer
+namespace Yutrel.PathTracer
 {
-    internal sealed class OfflinePathTracePass
+    internal sealed class PathTracePass
     {
         private static readonly ProfilingSampler Sampler = new("Yutrel Path Tracing");
 
@@ -31,7 +31,7 @@ namespace Yutrel.OfflineRenderer
             float preExposure,
             bool resetAccumulation)
         {
-            using var builder = renderGraph.AddComputePass<OfflinePathTracePass>(
+            using var builder = renderGraph.AddComputePass<PathTracePass>(
                 Sampler.name,
                 out var pass,
                 Sampler);
@@ -49,7 +49,7 @@ namespace Yutrel.OfflineRenderer
             builder.UseTexture(pass.output, AccessFlags.Write);
             builder.EnableAsyncCompute(false);
             builder.AllowGlobalStateModification(true);
-            builder.SetRenderFunc<OfflinePathTracePass>(static (data, context) =>
+            builder.SetRenderFunc<PathTracePass>(static (data, context) =>
             {
                 NativeBridge.IssuePathTrace(
                     context.cmd,

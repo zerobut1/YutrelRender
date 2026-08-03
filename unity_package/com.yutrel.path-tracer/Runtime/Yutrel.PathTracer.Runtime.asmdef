@@ -1,6 +1,6 @@
 {
-  "name": "Yutrel.OfflineRenderer.Runtime",
-  "rootNamespace": "Yutrel.OfflineRenderer",
+  "name": "Yutrel.PathTracer.Runtime",
+  "rootNamespace": "Yutrel.PathTracer",
   "references": [
     "Yutrel.RenderPipelines.Yutrel.Runtime",
     "Unity.RenderPipelines.Core.Runtime"

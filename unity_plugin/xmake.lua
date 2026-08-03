@@ -36,7 +36,7 @@ target("YutrelUnityPlugin")
         local package_dir = path.join(
             os.projectdir(),
             "unity_package",
-            "com.yutrel.offline-renderer",
+            "com.yutrel.path-tracer",
             "Runtime",
             "Plugins",
             "x86_64")

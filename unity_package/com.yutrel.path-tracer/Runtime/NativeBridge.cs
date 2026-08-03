@@ -4,7 +4,7 @@ using System.Runtime.InteropServices;
 using UnityEngine;
 using UnityEngine.Rendering;
 
-namespace Yutrel.OfflineRenderer
+namespace Yutrel.PathTracer
 {
     internal static class NativeBridge
     {
@@ -286,7 +286,7 @@ namespace Yutrel.OfflineRenderer
 #if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
                 if (SystemInfo.graphicsDeviceType != GraphicsDeviceType.Direct3D12)
                 {
-                    ReportErrorOnce("Yutrel Offline Renderer requires the Direct3D 12 graphics API.");
+                    ReportErrorOnce("YutrelPathTracer requires the Direct3D 12 graphics API.");
                     return false;
                 }
 
@@ -312,7 +312,7 @@ namespace Yutrel.OfflineRenderer
                     return false;
                 }
 #else
-                ReportErrorOnce("Yutrel Offline Renderer currently supports Windows x64 only.");
+                ReportErrorOnce("YutrelPathTracer currently supports Windows x64 only.");
                 return false;
 #endif
             }
