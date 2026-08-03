@@ -1,7 +1,11 @@
 #include "ut/ut.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 
+#include "base/spd.h"
+#include "spectrum/hero.h"
 #include "spectrum/srgb.h"
 #include "utils/color_space.h"
 #include "utils/spectra.h"
@@ -17,6 +21,38 @@ namespace
 [[nodiscard]] bool close(float a, float b, float tolerance = 2e-6f) noexcept
 {
     return std::abs(a - b) <= tolerance;
+}
+
+[[nodiscard]] bool close_relative(float actual, float expected, float tolerance) noexcept
+{
+    auto scale = std::max(std::abs(expected), 1e-6f);
+    return std::abs(actual - expected) <= tolerance * scale;
+}
+
+[[nodiscard]] float sigmoid(float value) noexcept
+{
+    if (std::isinf(value))
+    {
+        return value > 0.0f ? 1.0f : 0.0f;
+    }
+    return 0.5f + value / (2.0f * std::sqrt(1.0f + value * value));
+}
+
+[[nodiscard]] float3 decode_hero_illuminant_to_linear_srgb(float4 encoded) noexcept
+{
+    auto xyz = make_float3(0.0f);
+    for (auto sample_index = 0u; sample_index < cie_sample_count; sample_index++)
+    {
+        auto wavelength = visible_wavelength_min + static_cast<float>(sample_index);
+        auto polynomial = encoded.x * wavelength * wavelength +
+                          encoded.y * wavelength + encoded.z;
+        auto value = sigmoid(polynomial) * encoded.w * cie_d65_samples[sample_index];
+        xyz += value * make_float3(
+                           cie_x_samples[sample_index],
+                           cie_y_samples[sample_index],
+                           cie_z_samples[sample_index]);
+    }
+    return cie_xyz_to_linear_srgb(xyz / SPD::cie_y_integral());
 }
 
 } // namespace
@@ -56,6 +92,42 @@ static auto test_color_space_registration = []
         expect(close(encoded.y, 0.5f));
         expect(close(encoded.z, 1.0f));
         expect(close(encoded.w, 1.0f));
+    };
+
+    "hero_illuminant_round_trip_preserves_linear_srgb_and_cie_y"_test = []
+    {
+        HeroWavelengthSpectrum spectrum;
+        constexpr std::array colors{
+            float3{1.0f, 1.0f, 1.0f},
+            float3{0.18f, 0.18f, 0.18f},
+            float3{1.0f, 0.0f, 0.0f},
+            float3{0.0f, 1.0f, 0.0f},
+            float3{0.0f, 0.0f, 1.0f},
+            float3{8.0f, 0.25f, 0.05f},
+            float3{100000.0f, 60000.0f, 10000.0f},
+        };
+        for (auto color : colors)
+        {
+            auto encoded = spectrum.encode_static_srgb_illuminant(color);
+            auto reconstructed = decode_hero_illuminant_to_linear_srgb(encoded);
+            auto expected_y = linear_srgb_to_cie_y(color);
+            auto actual_y = linear_srgb_to_cie_y(reconstructed);
+            expect(close_relative(actual_y, expected_y, 0.01f));
+
+            auto component_scale = std::max(std::max(color.x, color.y), std::max(color.z, 1e-3f));
+            expect(std::abs(reconstructed.x - color.x) <= component_scale * 0.02f);
+            expect(std::abs(reconstructed.y - color.y) <= component_scale * 0.02f);
+            expect(std::abs(reconstructed.z - color.z) <= component_scale * 0.02f);
+        }
+    };
+
+    "photometric_unit_reference_values"_test = []
+    {
+        constexpr auto pi = 3.14159265358979323846f;
+        constexpr auto lambert_radiance = 100000.0f * 0.18f / pi;
+        constexpr auto area_flux = pi * 2.0f * 100.0f;
+        expect(close(lambert_radiance, 5729.578f, 1e-3f));
+        expect(close(area_flux, 200.0f * pi, 1e-4f));
     };
     return 0;
 }();

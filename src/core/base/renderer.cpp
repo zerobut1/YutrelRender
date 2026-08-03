@@ -159,7 +159,7 @@ bool Renderer::update_external_scene(
         if (!std::isfinite(light.color.x) || !std::isfinite(light.color.y) ||
             !std::isfinite(light.color.z) || light.color.x < 0.0f ||
             light.color.y < 0.0f || light.color.z < 0.0f ||
-            !std::isfinite(light.intensity) || light.intensity < 0.0f ||
+            !std::isfinite(light.illuminance_lux) || light.illuminance_lux < 0.0f ||
             !std::isfinite(light.direction.x) || !std::isfinite(light.direction.y) ||
             !std::isfinite(light.direction.z) || !std::isfinite(direction_length_squared) ||
             std::abs(direction_length_squared - 1.0f) > 1e-4f || light.enabled > 1u)
@@ -171,7 +171,8 @@ bool Renderer::update_external_scene(
             return false;
         }
     }
-    if (!m_geometry->update_external(command_buffer, mesh_updates))
+    if (!mesh_updates.empty() &&
+        !m_geometry->update_external(command_buffer, mesh_updates))
     {
         return false;
     }

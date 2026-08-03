@@ -20,25 +20,30 @@
 #include <luisa/luisa-compute.h>
 
 #include "base/film.h"
+#include "base/interaction.h"
 #include "base/renderer.h"
 #include "base/scene.h"
+#include "base/texture.h"
 #include "cameras/pinhole.h"
 #include "environments/distant.h"
 #include "filters/box.h"
 #include "integrators/path.h"
+#include "lights/diffuse.h"
 #include "samplers/independent.h"
+#include "scene/scene_builder.h"
 #include "scene/scene_spec_builder.h"
 #include "shapes/inline_mesh.h"
-#include "spectrum/srgb.h"
+#include "spectrum/hero.h"
 #include "surfaces/diffuse.h"
 #include "textures/constant.h"
+#include "textures/scale.h"
 
 namespace yutrel::unity {
 
 using namespace luisa;
 using namespace luisa::compute;
 
-constexpr uint32_t abi_version = 5u;
+constexpr uint32_t abi_version = 6u;
 constexpr int clear_event_id = 0;
 constexpr int path_trace_event_id = 1;
 constexpr size_t external_instance_capacity = 4096u;
@@ -55,21 +60,47 @@ enum SceneMeshOperation : uint32_t {
     mesh_remove = 3u,
 };
 
+enum class ExternalTextureEncoding : uint32_t {
+    linear_srgb = 0u,
+    srgb = 1u,
+};
+
+struct SceneSubMeshData {
+    uint32_t index_offset;
+    uint32_t index_count;
+    float emissive_color[3];
+    float emissive_luminance_nits;
+    uint32_t double_sided;
+    ExternalTextureEncoding texture_encoding;
+    const float *emissive_pixels;
+    uint32_t texture_width;
+    uint32_t texture_height;
+    float uv_scale[2];
+    float uv_offset[2];
+};
+
 struct SceneMeshDelta {
     uint64_t mesh_id;
     uint32_t operation;
     uint32_t reserved;
     const float *positions;
     const float *normals;
+    const float *uvs;
     const uint32_t *indices;
+    const SceneSubMeshData *submeshes;
     uint32_t vertex_count;
     uint32_t index_count;
+    uint32_t submesh_count;
+    uint32_t submesh_struct_size;
     float local_to_world[16];
 };
 
+static_assert(sizeof(SceneSubMeshData) == 64u);
+static_assert(sizeof(SceneMeshDelta) == 136u);
+
 struct DirectionalLightData {
     float color[3];
-    float intensity;
+    float illuminance_lux;
     float direction[3];
     uint32_t enabled;
 };
@@ -84,6 +115,9 @@ struct SceneDeltaData {
     DirectionalLightData light;
     uint32_t light_changed;
 };
+
+static_assert(sizeof(DirectionalLightData) == 32u);
+static_assert(sizeof(SceneDeltaData) == 72u);
 
 struct PathTraceEventData {
     uint32_t abi_version;
@@ -136,22 +170,60 @@ namespace {
 }
 
 struct MeshSnapshot {
+    struct SubMesh {
+        uint32_t index_offset;
+        uint32_t index_count;
+        float3 emissive_color;
+        float emissive_luminance_nits;
+        bool double_sided;
+        ExternalTextureEncoding texture_encoding;
+        luisa::vector<float4> emissive_pixels;
+        uint2 texture_size;
+        float2 uv_scale;
+        float2 uv_offset;
+
+        [[nodiscard]] bool emissive() const noexcept {
+            return emissive_luminance_nits > 0.0f && any(emissive_color > 0.0f);
+        }
+    };
+
     luisa::vector<float3> positions;
     luisa::vector<float3> normals;
+    luisa::vector<float2> uvs;
     luisa::vector<uint3> triangles;
+    luisa::vector<SubMesh> submeshes;
     float4x4 local_to_world;
     uint64_t geometry_revision{};
+
+    [[nodiscard]] bool has_emissive() const noexcept {
+        for (auto &&submesh : submeshes) {
+            if (submesh.emissive()) {
+                return true;
+            }
+        }
+        return false;
+    }
 };
 
 struct DesiredScene {
     luisa::unordered_map<uint64_t, MeshSnapshot> meshes;
     Yutrel::ExternalDirectionalLightState light{
         .color = make_float3(0.0f),
-        .intensity = 0.0f,
+        .illuminance_lux = 0.0f,
         .direction = make_float3(0.0f, 0.0f, 1.0f),
         .enabled = 0u,
     };
     uint64_t revision{};
+
+    [[nodiscard]] bool has_emissive() const noexcept {
+        for (auto &&[id, mesh] : meshes) {
+            static_cast<void>(id);
+            if (mesh.has_emissive()) {
+                return true;
+            }
+        }
+        return false;
+    }
 };
 
 [[nodiscard]] bool copy_mesh(
@@ -159,8 +231,10 @@ struct DesiredScene {
     uint64_t revision,
     MeshSnapshot &mesh) {
     if (data.positions == nullptr || data.normals == nullptr ||
-        data.indices == nullptr || data.vertex_count == 0u ||
-        data.index_count == 0u || data.index_count % 3u != 0u) {
+        data.indices == nullptr || data.submeshes == nullptr ||
+        data.vertex_count == 0u || data.index_count == 0u ||
+        data.index_count % 3u != 0u || data.submesh_count == 0u ||
+        data.submesh_struct_size != sizeof(SceneSubMeshData)) {
         return false;
     }
     mesh.positions.reserve(data.vertex_count);
@@ -182,6 +256,16 @@ struct DesiredScene {
         mesh.positions.emplace_back(position);
         mesh.normals.emplace_back(normalize(normal));
     }
+    if (data.uvs != nullptr) {
+        mesh.uvs.reserve(data.vertex_count);
+        for (auto i = 0u; i < data.vertex_count; i++) {
+            auto uv = make_float2(data.uvs[i * 2u], data.uvs[i * 2u + 1u]);
+            if (!std::isfinite(uv.x) || !std::isfinite(uv.y)) {
+                return false;
+            }
+            mesh.uvs.emplace_back(uv);
+        }
+    }
 
     mesh.triangles.reserve(data.index_count / 3u);
     for (auto i = 0u; i < data.index_count; i += 3u) {
@@ -196,6 +280,64 @@ struct DesiredScene {
         mesh.triangles.emplace_back(triangle);
     }
 
+    auto expected_index_offset = 0u;
+    mesh.submeshes.reserve(data.submesh_count);
+    for (auto submesh_index = 0u; submesh_index < data.submesh_count; submesh_index++) {
+        auto &&source = data.submeshes[submesh_index];
+        auto color = make_float3(
+            source.emissive_color[0],
+            source.emissive_color[1],
+            source.emissive_color[2]);
+        auto texture_size = make_uint2(source.texture_width, source.texture_height);
+        auto texture_pixel_count = static_cast<uint64_t>(texture_size.x) * texture_size.y;
+        auto has_texture = texture_size.x != 0u || texture_size.y != 0u;
+        if (source.index_offset != expected_index_offset || source.index_count == 0u ||
+            source.index_count % 3u != 0u ||
+            static_cast<uint64_t>(source.index_offset) + source.index_count > data.index_count ||
+            !finite(color) || color.x < 0.0f || color.y < 0.0f || color.z < 0.0f ||
+            !std::isfinite(source.emissive_luminance_nits) ||
+            source.emissive_luminance_nits < 0.0f || source.double_sided > 1u ||
+            source.texture_encoding > ExternalTextureEncoding::srgb ||
+            (has_texture && (texture_size.x == 0u || texture_size.y == 0u ||
+                             source.emissive_pixels == nullptr || mesh.uvs.empty())) ||
+            (!has_texture && source.emissive_pixels != nullptr) ||
+            texture_pixel_count > std::numeric_limits<uint32_t>::max() ||
+            !std::isfinite(source.uv_scale[0]) || !std::isfinite(source.uv_scale[1]) ||
+            !std::isfinite(source.uv_offset[0]) || !std::isfinite(source.uv_offset[1])) {
+            return false;
+        }
+        MeshSnapshot::SubMesh submesh{
+            .index_offset = source.index_offset,
+            .index_count = source.index_count,
+            .emissive_color = color,
+            .emissive_luminance_nits = source.emissive_luminance_nits,
+            .double_sided = source.double_sided != 0u,
+            .texture_encoding = source.texture_encoding,
+            .texture_size = texture_size,
+            .uv_scale = make_float2(source.uv_scale[0], source.uv_scale[1]),
+            .uv_offset = make_float2(source.uv_offset[0], source.uv_offset[1]),
+        };
+        submesh.emissive_pixels.reserve(texture_pixel_count);
+        for (auto pixel_index = 0ull; pixel_index < texture_pixel_count; pixel_index++) {
+            auto pixel = make_float4(
+                source.emissive_pixels[pixel_index * 4u],
+                source.emissive_pixels[pixel_index * 4u + 1u],
+                source.emissive_pixels[pixel_index * 4u + 2u],
+                source.emissive_pixels[pixel_index * 4u + 3u]);
+            if (!std::isfinite(pixel.x) || !std::isfinite(pixel.y) ||
+                !std::isfinite(pixel.z) || !std::isfinite(pixel.w) ||
+                any(pixel < 0.0f)) {
+                return false;
+            }
+            submesh.emissive_pixels.emplace_back(pixel);
+        }
+        mesh.submeshes.emplace_back(std::move(submesh));
+        expected_index_offset += source.index_count;
+    }
+    if (expected_index_offset != data.index_count) {
+        return false;
+    }
+
     mesh.local_to_world = load_matrix(data.local_to_world);
     if (Yutrel::validate_camera_to_world(mesh.local_to_world)) {
         return false;
@@ -208,14 +350,14 @@ struct DesiredScene {
 copy_light(const DirectionalLightData &data) {
     auto light = Yutrel::ExternalDirectionalLightState{
         .color = make_float3(data.color[0], data.color[1], data.color[2]),
-        .intensity = data.intensity,
+        .illuminance_lux = data.illuminance_lux,
         .direction = make_float3(data.direction[0], data.direction[1], data.direction[2]),
         .enabled = data.enabled,
     };
     auto direction_length_squared = dot(light.direction, light.direction);
     if (!finite(light.color) || light.color.x < 0.0f || light.color.y < 0.0f ||
-        light.color.z < 0.0f || !std::isfinite(light.intensity) ||
-        light.intensity < 0.0f || !finite(light.direction) ||
+        light.color.z < 0.0f || !std::isfinite(light.illuminance_lux) ||
+        light.illuminance_lux < 0.0f || !finite(light.direction) ||
         !std::isfinite(direction_length_squared) ||
         std::abs(direction_length_squared - 1.0f) > 1e-4f || light.enabled > 1u) {
         return luisa::nullopt;
@@ -223,6 +365,116 @@ copy_light(const DirectionalLightData &data) {
     light.direction = normalize(light.direction);
     return light;
 }
+
+class UnityImageTexture final : public Yutrel::Texture {
+public:
+    class Instance final : public Yutrel::Texture::Instance {
+    private:
+        uint32_t _texture_id;
+
+    public:
+        Instance(
+            const Yutrel::Renderer &renderer,
+            const Yutrel::Texture *texture,
+            uint32_t texture_id) noexcept
+            : Yutrel::Texture::Instance{renderer, texture},
+              _texture_id{texture_id} {}
+
+        [[nodiscard]] Float4 evaluate(
+            const Yutrel::Interaction &interaction,
+            Expr<float> time) const noexcept override {
+            static_cast<void>(time);
+            auto texture = base<UnityImageTexture>();
+            auto uv = interaction.uv * texture->uv_scale() + texture->uv_offset();
+            auto value = renderer().tex2d(_texture_id).sample(uv);
+            if (texture->encoding() == ExternalTextureEncoding::srgb) {
+                auto rgb = value.xyz();
+                auto linear = ite(
+                    rgb <= 0.04045f,
+                    rgb * (1.0f / 12.92f),
+                    pow((rgb + 0.055f) * (1.0f / 1.055f), 2.4f));
+                value = make_float4(linear, value.w);
+            }
+            return value;
+        }
+    };
+
+private:
+    luisa::vector<float4> _pixels;
+    uint2 _size;
+    ExternalTextureEncoding _encoding;
+    float2 _uv_scale;
+    float2 _uv_offset;
+
+public:
+    UnityImageTexture(
+        luisa::vector<float4> pixels,
+        uint2 size,
+        ExternalTextureEncoding encoding,
+        float2 uv_scale,
+        float2 uv_offset) noexcept
+        : _pixels{std::move(pixels)},
+          _size{size},
+          _encoding{encoding},
+          _uv_scale{uv_scale},
+          _uv_offset{uv_offset} {}
+
+    [[nodiscard]] luisa::unique_ptr<Yutrel::Texture::Instance> build(
+        Yutrel::Renderer &renderer,
+        Yutrel::CommandBuffer &command_buffer) const noexcept override {
+        auto image = renderer.create<Image<float>>(PixelStorage::FLOAT4, _size);
+        auto texture_id = renderer.register_bindless(
+            *image,
+            Yutrel::TextureSampler::linear_point_repeat());
+        command_buffer << image->copy_from(_pixels.data()) << commit();
+        return luisa::make_unique<Instance>(renderer, this, texture_id);
+    }
+
+    [[nodiscard]] uint channels() const noexcept override { return 4u; }
+    [[nodiscard]] uint2 resolution() const noexcept override { return _size; }
+    [[nodiscard]] auto encoding() const noexcept { return _encoding; }
+    [[nodiscard]] auto uv_scale() const noexcept { return _uv_scale; }
+    [[nodiscard]] auto uv_offset() const noexcept { return _uv_offset; }
+};
+
+class UnityImageTextureSpec final : public Yutrel::TextureSpec {
+private:
+    luisa::vector<float4> _pixels;
+    uint2 _size;
+    ExternalTextureEncoding _encoding;
+    float2 _uv_scale;
+    float2 _uv_offset;
+
+public:
+    UnityImageTextureSpec(
+        luisa::vector<float4> pixels,
+        uint2 size,
+        ExternalTextureEncoding encoding,
+        float2 uv_scale,
+        float2 uv_offset) noexcept
+        : _pixels{std::move(pixels)},
+          _size{size},
+          _encoding{encoding},
+          _uv_scale{uv_scale},
+          _uv_offset{uv_offset} {}
+
+    [[nodiscard]] luisa::optional<luisa::string> validate() const noexcept override {
+        auto pixel_count = static_cast<uint64_t>(_size.x) * _size.y;
+        return _size.x != 0u && _size.y != 0u && pixel_count == _pixels.size()
+                   ? luisa::nullopt
+                   : Yutrel::spec_validation_error("Unity image texture dimensions are invalid.");
+    }
+
+    [[nodiscard]] const Yutrel::Texture *build(
+        Yutrel::SceneBuilder &builder) const noexcept override {
+        return builder.emplace<Yutrel::Texture, UnityImageTexture>(
+            _pixels,
+            _size,
+            _encoding,
+            _uv_scale,
+            _uv_offset);
+    }
+};
 
 [[nodiscard]] luisa::unique_ptr<Yutrel::Scene> create_scene(
     const DesiredScene &snapshot,
@@ -237,7 +489,7 @@ copy_light(const DirectionalLightData &data) {
     auto emission = builder.add_anonymous_texture<ConstantTextureSpec>(
         source, make_float4(1.0f));
     auto surface = builder.add_anonymous_surface<DiffuseSurfaceSpec>(source, albedo, true);
-    auto spectrum = builder.add_anonymous_spectrum<SRGBSpectrumSpec>(source);
+    auto spectrum = builder.add_anonymous_spectrum<HeroWavelengthSpectrumSpec>(source);
     auto environment = builder.add_anonymous_environment<DistantEnvironmentSpec>(
         source,
         emission,
@@ -254,25 +506,81 @@ copy_light(const DirectionalLightData &data) {
         source,
         camera.resolution,
         false,
-        "unity-unused.exr");
+        "unity-unused.exr",
+        1.0f);
     auto filter = builder.add_anonymous_filter<BoxFilterSpec>(source, 0.5f);
     auto sampler = builder.add_anonymous_sampler<IndependentSamplerSpec>(source, 1u, 0u);
     auto integrator = builder.add_anonymous_integrator<PathIntegratorSpec>(source, 4u);
-    instance_ids.reserve(snapshot.meshes.size());
-    for (auto &&[mesh_id, mesh] : snapshot.meshes) {
-        auto shape = builder.add_anonymous_shape<InlineMeshShapeSpec>(
-            source,
-            mesh.positions,
-            mesh.normals,
-            luisa::vector<float2>{},
-            mesh.triangles);
-        builder.add_instance(ShapeInstanceSpec{
-            .source = source,
-            .shape = shape,
-            .surface = surface,
-            .transform = mesh.local_to_world,
-        });
-        instance_ids.emplace_back(mesh_id);
+    auto contains_emissive = snapshot.has_emissive();
+    if (!contains_emissive) {
+        instance_ids.reserve(snapshot.meshes.size());
+        for (auto &&[mesh_id, mesh] : snapshot.meshes) {
+            auto shape = builder.add_anonymous_shape<InlineMeshShapeSpec>(
+                source,
+                mesh.positions,
+                mesh.normals,
+                mesh.uvs,
+                mesh.triangles);
+            builder.add_instance(ShapeInstanceSpec{
+                .source = source,
+                .shape = shape,
+                .surface = surface,
+                .transform = mesh.local_to_world,
+            });
+            instance_ids.emplace_back(mesh_id);
+        }
+    } else {
+        for (auto &&[mesh_id, mesh] : snapshot.meshes) {
+            static_cast<void>(mesh_id);
+            for (auto &&submesh : mesh.submeshes) {
+                auto triangle_begin = submesh.index_offset / 3u;
+                auto triangle_count = submesh.index_count / 3u;
+                luisa::vector<uint3> triangles;
+                triangles.reserve(triangle_count);
+                for (auto triangle_index = 0u; triangle_index < triangle_count; triangle_index++) {
+                    triangles.emplace_back(mesh.triangles[triangle_begin + triangle_index]);
+                }
+                auto shape = builder.add_anonymous_shape<InlineMeshShapeSpec>(
+                    source,
+                    mesh.positions,
+                    mesh.normals,
+                    mesh.uvs,
+                    std::move(triangles));
+                ShapeInstanceSpec instance{
+                    .source = source,
+                    .shape = shape,
+                    .surface = surface,
+                    .transform = mesh.local_to_world,
+                };
+                if (submesh.emissive()) {
+                    auto emissive_texture = [&]() -> TextureRef {
+                        if (submesh.emissive_pixels.empty()) {
+                            return builder.add_anonymous_texture<ConstantTextureSpec>(
+                                source,
+                                make_float4(submesh.emissive_color, 1.0f));
+                        }
+                        auto image = builder.add_anonymous_texture<UnityImageTextureSpec>(
+                            source,
+                            submesh.emissive_pixels,
+                            submesh.texture_size,
+                            submesh.texture_encoding,
+                            submesh.uv_scale,
+                            submesh.uv_offset);
+                        return builder.add_anonymous_texture<ScaleTextureSpec>(
+                            source,
+                            image,
+                            make_float4(submesh.emissive_color, 1.0f),
+                            make_float4(0.0f));
+                    }();
+                    instance.light = builder.add_anonymous_light<DiffuseLightSpec>(
+                        source,
+                        emissive_texture,
+                        submesh.emissive_luminance_nits,
+                        submesh.double_sided);
+                }
+                builder.add_instance(std::move(instance));
+            }
+        }
     }
     builder.set_render(RenderSpec{
         .spectrum = spectrum,
@@ -311,6 +619,7 @@ private:
         luisa::unordered_map<uint32_t, ViewRuntime> views;
         Yutrel::ExternalCameraState active_camera{};
         bool active_camera_valid{};
+        bool contains_emissive{};
         uint64_t applied_revision{};
 
         [[nodiscard]] ViewRuntime &view(uint32_t view_id) {
@@ -585,9 +894,15 @@ private:
 
         auto runtime = luisa::make_unique<SceneRuntime>();
         luisa::vector<uint64_t> instance_ids;
+        runtime->contains_emissive = _desired_scene.has_emissive();
         runtime->scene = create_scene(_desired_scene, camera, instance_ids);
         if (runtime->scene == nullptr) {
             report_path_error_once(path_error_scene, "Failed to create the Unity Yutrel scene.");
+            return false;
+        }
+        if (dynamic_cast<const Yutrel::HeroWavelengthSpectrum *>(
+                runtime->scene->spectrum()) == nullptr) {
+            report_path_error_once(path_error_scene, "Unity Yutrel scene did not create the required Hero spectrum.");
             return false;
         }
         runtime->renderer = Yutrel::Renderer::create(_device, _stream, *runtime->scene);
@@ -600,10 +915,11 @@ private:
             return false;
         }
         Yutrel::CommandBuffer commands{_stream};
-        if (!runtime->renderer->prepare_external_scene_updates(
-                commands,
-                instance_ids,
-                instances.front().surface) ||
+        if ((!runtime->contains_emissive &&
+             !runtime->renderer->prepare_external_scene_updates(
+                 commands,
+                 instance_ids,
+                 instances.front().surface)) ||
             !runtime->renderer->update_external_scene(
                 commands,
                 {},
@@ -626,6 +942,28 @@ private:
         runtime->applied_revision = _desired_scene.revision;
         _scene_runtime = std::move(runtime);
         return true;
+    }
+
+    [[nodiscard]] bool scene_requires_rebuild(const SceneRuntime &runtime) const noexcept {
+        auto desired_contains_emissive = _desired_scene.has_emissive();
+        if (runtime.contains_emissive != desired_contains_emissive) {
+            return true;
+        }
+        if (!runtime.contains_emissive) {
+            return false;
+        }
+        if (runtime.applied_meshes.size() != _desired_scene.meshes.size()) {
+            return true;
+        }
+        for (auto &&[id, mesh] : _desired_scene.meshes) {
+            auto applied = runtime.applied_meshes.find(id);
+            if (applied == runtime.applied_meshes.end() ||
+                applied->second.geometry_revision != mesh.geometry_revision ||
+                !matrix_near(applied->second.local_to_world, mesh.local_to_world)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     [[nodiscard]] bool apply_scene_updates(
@@ -653,7 +991,7 @@ private:
                 auto shape = luisa::make_unique<Yutrel::InlineMesh>(
                     mesh.positions,
                     mesh.normals,
-                    luisa::vector<float2>{},
+                    mesh.uvs,
                     mesh.triangles);
                 updates.emplace_back(Yutrel::ExternalMeshUpdate{
                     .id = id,
@@ -720,6 +1058,14 @@ private:
         }
         if (!ensure_runtime(camera)) {
             return false;
+        }
+
+        if (scene_requires_rebuild(*_scene_runtime)) {
+            _scene_runtime = nullptr;
+            if (!ensure_runtime(camera)) {
+                report_path_error_once(path_error_scene, "Failed to rebuild the Unity emissive scene.");
+                return false;
+            }
         }
 
         auto &runtime = *_scene_runtime;

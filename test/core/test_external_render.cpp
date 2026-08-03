@@ -1,21 +1,25 @@
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 
 #include <luisa/luisa-compute.h>
 
 #include "base/film.h"
+#include "base/geometry.h"
 #include "base/renderer.h"
 #include "base/scene.h"
 #include "cameras/pinhole.h"
 #include "environments/distant.h"
 #include "filters/box.h"
 #include "integrators/path.h"
+#include "lights/diffuse.h"
 #include "samplers/independent.h"
 #include "scene/scene_spec_builder.h"
 #include "shapes/inline_mesh.h"
-#include "spectrum/srgb.h"
+#include "spectrum/hero.h"
 #include "surfaces/diffuse.h"
 #include "textures/constant.h"
+#include "utils/color_space.h"
 
 using namespace luisa;
 using namespace luisa::compute;
@@ -36,7 +40,7 @@ struct RegionResult
     SceneSpecBuilder builder;
     SourceLocation source{.file = "external-render-test"};
     auto albedo = builder.add_anonymous_texture<ConstantTextureSpec>(
-        source, make_float4(0.5f, 0.5f, 0.5f, 1.0f));
+        source, make_float4(0.18f, 0.18f, 0.18f, 1.0f));
     auto emission = builder.add_anonymous_texture<ConstantTextureSpec>(
         source, make_float4(1.0f));
     auto surface = builder.add_anonymous_surface<DiffuseSurfaceSpec>(source, albedo, true);
@@ -60,7 +64,7 @@ struct RegionResult
         luisa::vector(4u, make_float3(0.0f, 0.0f, 1.0f)),
         luisa::vector<float2>{},
         luisa::vector{make_uint3(0u, 1u, 2u), make_uint3(0u, 2u, 3u)});
-    auto spectrum = builder.add_anonymous_spectrum<SRGBSpectrumSpec>(source);
+    auto spectrum = builder.add_anonymous_spectrum<HeroWavelengthSpectrumSpec>(source);
     auto environment = builder.add_anonymous_environment<DistantEnvironmentSpec>(
         source, emission, 1.0f, make_float3(0.0f, 0.0f, 1.0f));
     auto camera = builder.add_anonymous_camera<PinholeCameraSpec>(
@@ -89,6 +93,63 @@ struct RegionResult
         .shape = right_shape,
         .surface = surface,
         .transform = right_transform,
+    });
+    builder.set_render(RenderSpec{
+        .spectrum = spectrum,
+        .environment = environment,
+        .camera = camera,
+        .film = film,
+        .filter = filter,
+        .sampler = sampler,
+        .integrator = integrator,
+    });
+    auto spec = builder.finish();
+    return Scene::create(spec);
+}
+
+[[nodiscard]] luisa::unique_ptr<Scene> create_emissive_scene(uint2 resolution)
+{
+    SceneSpecBuilder builder;
+    SourceLocation source{.file = "external-emissive-test"};
+    auto albedo = builder.add_anonymous_texture<ConstantTextureSpec>(
+        source, make_float4(0.18f, 0.18f, 0.18f, 1.0f));
+    auto white = builder.add_anonymous_texture<ConstantTextureSpec>(
+        source, make_float4(1.0f));
+    auto black = builder.add_anonymous_texture<ConstantTextureSpec>(
+        source, make_float4(0.0f, 0.0f, 0.0f, 1.0f));
+    auto surface = builder.add_anonymous_surface<DiffuseSurfaceSpec>(source, albedo, true);
+    auto light = builder.add_anonymous_light<DiffuseLightSpec>(source, white, 100.0f, false);
+    constexpr auto half_extent = 0.7071067811865475244f;
+    auto shape = builder.add_anonymous_shape<InlineMeshShapeSpec>(
+        source,
+        luisa::vector{
+            make_float3(-half_extent, -half_extent, -3.0f),
+            make_float3(half_extent, -half_extent, -3.0f),
+            make_float3(half_extent, half_extent, -3.0f),
+            make_float3(-half_extent, half_extent, -3.0f)},
+        luisa::vector(4u, make_float3(0.0f, 0.0f, 1.0f)),
+        luisa::vector<float2>{},
+        luisa::vector{make_uint3(0u, 1u, 2u), make_uint3(0u, 2u, 3u)});
+    auto spectrum = builder.add_anonymous_spectrum<HeroWavelengthSpectrumSpec>(source);
+    auto environment = builder.add_anonymous_environment<DistantEnvironmentSpec>(
+        source, black, 0.0f, make_float3(0.0f, 0.0f, 1.0f));
+    auto camera = builder.add_anonymous_camera<PinholeCameraSpec>(
+        source,
+        make_float4x4(1.0f),
+        make_float3(0.0f, 1.0f, 0.0f),
+        make_float2(0.0f),
+        0u,
+        45.0f);
+    auto film = builder.add_anonymous_film<RGBFilmSpec>(
+        source, resolution, false, "external-emissive-test.exr", 1.0f);
+    auto filter = builder.add_anonymous_filter<BoxFilterSpec>(source, 0.5f);
+    auto sampler = builder.add_anonymous_sampler<IndependentSamplerSpec>(source, 1u, 0u);
+    auto integrator = builder.add_anonymous_integrator<PathIntegratorSpec>(source, 4u);
+    builder.add_instance(ShapeInstanceSpec{
+        .source = source,
+        .shape = shape,
+        .surface = surface,
+        .light = light,
     });
     builder.set_render(RenderSpec{
         .spectrum = spectrum,
@@ -145,6 +206,141 @@ struct RegionResult
         right_has_radiance |= has_radiance && x >= resolution.x / 2u;
     }
     return left_has_radiance && right_has_radiance;
+}
+
+[[nodiscard]] bool render_photometric_reference(
+    Device& device,
+    Stream& stream,
+    Renderer& renderer,
+    uint2 resolution)
+{
+    constexpr auto sample_count = 256u;
+    auto accumulation = device.create_image<float>(PixelStorage::FLOAT4, resolution);
+    Kernel2D clear = [](ImageFloat image) noexcept
+    {
+        image.write(dispatch_id().xy(), make_float4(0.0f));
+    };
+    auto clear_shader = device.compile(clear);
+    CommandBuffer commands{stream};
+    commands << clear_shader(accumulation).dispatch(resolution);
+    for (auto sample = 0u; sample < sample_count; sample++)
+    {
+        if (!renderer.render_external_sample(commands, accumulation, resolution, sample))
+        {
+            return false;
+        }
+    }
+    luisa::vector<float4> pixels(static_cast<size_t>(resolution.x) * resolution.y);
+    commands << accumulation.copy_to(luisa::span{pixels}) << synchronize();
+
+    auto mean_rgb = make_float3(0.0f);
+    auto roi_pixel_count = 0u;
+    for (auto y = 5u; y <= 10u; y++)
+    {
+        for (auto x = 2u; x <= 6u; x++)
+        {
+            auto pixel = pixels[y * resolution.x + x];
+            if (!std::isfinite(pixel.x) || !std::isfinite(pixel.y) ||
+                !std::isfinite(pixel.z) || pixel.w != static_cast<float>(sample_count))
+            {
+                return false;
+            }
+            mean_rgb += pixel.xyz() / pixel.w;
+            roi_pixel_count++;
+        }
+    }
+    mean_rgb /= static_cast<float>(roi_pixel_count);
+    auto actual_luminance = linear_srgb_to_cie_y(mean_rgb);
+    constexpr auto expected_luminance = 5729.578f;
+    auto relative_error = std::abs(actual_luminance - expected_luminance) / expected_luminance;
+    auto chromatic_error = std::max(
+        std::abs(mean_rgb.x - actual_luminance),
+        std::max(
+            std::abs(mean_rgb.y - actual_luminance),
+            std::abs(mean_rgb.z - actual_luminance))) / actual_luminance;
+    if (relative_error > 0.02f || chromatic_error > 0.03f)
+    {
+        std::cerr << "Photometric reference mismatch: Y=" << actual_luminance
+                  << ", expected=" << expected_luminance
+                  << ", RGB=(" << mean_rgb.x << ", " << mean_rgb.y << ", "
+                  << mean_rgb.z << "), relative error=" << relative_error
+                  << ", chromatic error=" << chromatic_error << '\n';
+        return false;
+    }
+    return true;
+}
+
+[[nodiscard]] bool test_emissive_area_light(
+    Device& device,
+    Stream& stream,
+    uint2 resolution)
+{
+    auto scene = create_emissive_scene(resolution);
+    auto renderer = Renderer::create(device, stream, *scene);
+    if (!renderer || renderer->geometry()->light_instances().size() != 1u ||
+        !renderer->prepare_external_render())
+    {
+        return false;
+    }
+    ExternalCameraState camera{
+        .camera_to_world = make_float4x4(1.0f),
+        .resolution = resolution,
+        .vertical_fov_degrees = 45.0f,
+    };
+    CommandBuffer setup{stream};
+    if (!renderer->update_external_camera(setup, camera))
+    {
+        return false;
+    }
+    setup << synchronize();
+
+    constexpr auto sample_count = 256u;
+    auto accumulation = device.create_image<float>(PixelStorage::FLOAT4, resolution);
+    Kernel2D clear = [](ImageFloat image) noexcept
+    {
+        image.write(dispatch_id().xy(), make_float4(0.0f));
+    };
+    auto clear_shader = device.compile(clear);
+    CommandBuffer commands{stream};
+    commands << clear_shader(accumulation).dispatch(resolution);
+    for (auto sample = 0u; sample < sample_count; sample++)
+    {
+        if (!renderer->render_external_sample(commands, accumulation, resolution, sample))
+        {
+            return false;
+        }
+    }
+    luisa::vector<float4> pixels(static_cast<size_t>(resolution.x) * resolution.y);
+    commands << accumulation.copy_to(luisa::span{pixels}) << synchronize();
+
+    auto mean_rgb = make_float3(0.0f);
+    auto roi_pixel_count = 0u;
+    for (auto y = 5u; y <= 10u; y++)
+    {
+        for (auto x = 5u; x <= 10u; x++)
+        {
+            auto pixel = pixels[y * resolution.x + x];
+            if (!std::isfinite(pixel.x) || !std::isfinite(pixel.y) ||
+                !std::isfinite(pixel.z) || pixel.w != static_cast<float>(sample_count))
+            {
+                return false;
+            }
+            mean_rgb += pixel.xyz() / pixel.w;
+            roi_pixel_count++;
+        }
+    }
+    mean_rgb /= static_cast<float>(roi_pixel_count);
+    auto actual_luminance = linear_srgb_to_cie_y(mean_rgb);
+    auto relative_error = std::abs(actual_luminance - 100.0f) / 100.0f;
+    constexpr auto pi = 3.14159265358979323846f;
+    constexpr auto luminous_flux = pi * 2.0f * 100.0f;
+    if (relative_error > 0.02f || std::abs(luminous_flux - 200.0f * pi) > 1e-4f)
+    {
+        std::cerr << "Emissive area-light mismatch: Y=" << actual_luminance
+                  << ", expected=100, flux=" << luminous_flux << '\n';
+        return false;
+    }
+    return true;
 }
 
 [[nodiscard]] bool has_sample_count(
@@ -274,6 +470,10 @@ int main(int argc, char* argv[])
     auto device = context.create_device(argv[1]);
     auto stream = device.create_stream();
     auto resolution = make_uint2(16u, 16u);
+    if (!test_emissive_area_light(device, stream, resolution))
+    {
+        return 1;
+    }
     auto scene = create_scene(resolution);
     auto renderer = Renderer::create(device, stream, *scene);
     if (!renderer)
@@ -292,7 +492,7 @@ int main(int argc, char* argv[])
             {},
             ExternalDirectionalLightState{
                 .color = make_float3(1.0f),
-                .intensity = 1.0f,
+                .illuminance_lux = 100000.0f,
                 .direction = make_float3(0.0f, 0.0f, 1.0f),
                 .enabled = 1u,
             }))
@@ -316,6 +516,10 @@ int main(int argc, char* argv[])
         return 1;
     }
     commands << synchronize();
+    if (!render_photometric_reference(device, stream, *renderer, resolution))
+    {
+        return 1;
+    }
     if (!render_and_check(device, stream, *renderer, resolution, 2u))
     {
         std::cerr << "External accumulation test failed.\n";
@@ -423,7 +627,7 @@ int main(int argc, char* argv[])
 
     auto disabled_light = ExternalDirectionalLightState{
         .color = make_float3(1.0f),
-        .intensity = 1.0f,
+        .illuminance_lux = 1.0f,
         .direction = make_float3(0.0f, 0.0f, 1.0f),
         .enabled = 0u,
     };
@@ -443,7 +647,7 @@ int main(int argc, char* argv[])
 
     auto enabled_light = disabled_light;
     enabled_light.color = make_float3(0.5f, 1.0f, 0.25f);
-    enabled_light.intensity = 2.0f;
+    enabled_light.illuminance_lux = 2.0f;
     enabled_light.enabled = 1u;
     CommandBuffer enable_light_commands{stream};
     if (!renderer->update_external_scene(enable_light_commands, {}, enabled_light))

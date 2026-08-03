@@ -14,11 +14,12 @@ DistantEnvironment::Instance::Instance(
     const Texture::Instance* emission) noexcept
     : Environment::Instance{renderer, environment},
       _emission{emission},
-      _external_state{renderer.device().create_buffer<float4>(2u)}
+      _external_state{renderer.device().create_buffer<float4>(3u)}
 {
     auto initial_state = std::array{
         make_float4(1.0f, 1.0f, 1.0f, 1.0f),
         make_float4(environment->direction(), 1.0f),
+        make_float4(0.0f),
     };
     command_buffer
         << _external_state.copy_from(luisa::span{initial_state})
@@ -30,8 +31,9 @@ void DistantEnvironment::Instance::update_external_state(
     const ExternalDirectionalLightState& state) noexcept
 {
     auto data = std::array{
-        make_float4(state.color, state.intensity),
+        make_float4(state.color, state.illuminance_lux),
         make_float4(state.direction, state.enabled != 0u ? 1.0f : 0.0f),
+        make_float4(1.0f),
     };
     command_buffer
         << _external_state.copy_from(luisa::span{data})
@@ -69,13 +71,16 @@ Environment::Sample DistantEnvironment::Instance::sample(
     static_cast<void>(allow_incomplete_pdf);
     Interaction it{};
     auto environment = base<DistantEnvironment>();
-    auto color_and_intensity = _external_state->read(0u);
+    auto color_and_illuminance = _external_state->read(0u);
     auto direction_and_enabled = _external_state->read(1u);
+    auto external_override = _external_state->read(2u).x > 0.5f;
     auto encoded_color = renderer().spectrum()->encode_srgb_illuminant(
-        max(color_and_intensity.xyz(), 0.0f));
+        max(color_and_illuminance.xyz(), 0.0f));
     auto color = renderer().spectrum()->decode_illuminant(swl, encoded_color).value;
-    auto L = _emission->evaluate_illuminant_spectrum(it, swl, time).value *
-             color * environment->scale() * color_and_intensity.w * direction_and_enabled.w;
+    auto standalone = _emission->evaluate_illuminant_spectrum(it, swl, time).value *
+                      environment->scale();
+    auto external = color * color_and_illuminance.w;
+    auto L = ite(external_override, external, standalone) * direction_and_enabled.w;
     return Sample{
         .eval = {
             .L = std::move(L),

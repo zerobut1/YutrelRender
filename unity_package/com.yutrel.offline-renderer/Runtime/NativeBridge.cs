@@ -9,7 +9,7 @@ namespace Yutrel.OfflineRenderer
     internal static class NativeBridge
     {
         private const string LibraryName = "YutrelUnityPlugin";
-        private const uint AbiVersion = 5;
+        private const uint AbiVersion = 6;
         private const int ClearEventId = 0;
         private const int PathTraceEventId = 1;
 
@@ -33,6 +33,28 @@ namespace Yutrel.OfflineRenderer
             Remove = 3
         }
 
+        internal enum ExternalTextureEncoding : uint
+        {
+            LinearSrgb = 0,
+            Srgb = 1
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private unsafe struct SceneSubMeshData
+        {
+            public uint indexOffset;
+            public uint indexCount;
+            public fixed float emissiveColor[3];
+            public float emissiveLuminanceNits;
+            public uint doubleSided;
+            public ExternalTextureEncoding textureEncoding;
+            public IntPtr emissivePixels;
+            public uint textureWidth;
+            public uint textureHeight;
+            public fixed float uvScale[2];
+            public fixed float uvOffset[2];
+        }
+
         [StructLayout(LayoutKind.Sequential)]
         private unsafe struct SceneMeshDelta
         {
@@ -41,9 +63,13 @@ namespace Yutrel.OfflineRenderer
             public uint reserved;
             public IntPtr positions;
             public IntPtr normals;
+            public IntPtr uvs;
             public IntPtr indices;
+            public IntPtr subMeshes;
             public uint vertexCount;
             public uint indexCount;
+            public uint subMeshCount;
+            public uint subMeshStructSize;
             public fixed float localToWorld[16];
         }
 
@@ -51,7 +77,7 @@ namespace Yutrel.OfflineRenderer
         private unsafe struct DirectionalLightData
         {
             public fixed float color[3];
-            public float intensity;
+            public float illuminanceLux;
             public fixed float direction[3];
             public uint enabled;
         }
@@ -75,7 +101,9 @@ namespace Yutrel.OfflineRenderer
             internal readonly SceneMeshOperation operation;
             internal readonly Vector3[] positions;
             internal readonly Vector3[] normals;
+            internal readonly Vector2[] uvs;
             internal readonly uint[] indices;
+            internal readonly SceneSubMeshUpdate[] subMeshes;
             internal readonly Matrix4x4 localToWorld;
 
             private SceneMeshUpdate(
@@ -83,14 +111,18 @@ namespace Yutrel.OfflineRenderer
                 SceneMeshOperation operation,
                 Vector3[] positions,
                 Vector3[] normals,
+                Vector2[] uvs,
                 uint[] indices,
+                SceneSubMeshUpdate[] subMeshes,
                 Matrix4x4 localToWorld)
             {
                 this.id = id;
                 this.operation = operation;
                 this.positions = positions;
                 this.normals = normals;
+                this.uvs = uvs;
                 this.indices = indices;
+                this.subMeshes = subMeshes;
                 this.localToWorld = localToWorld;
             }
 
@@ -98,7 +130,9 @@ namespace Yutrel.OfflineRenderer
                 ulong id,
                 Vector3[] positions,
                 Vector3[] normals,
+                Vector2[] uvs,
                 uint[] indices,
+                SceneSubMeshUpdate[] subMeshes,
                 Matrix4x4 localToWorld)
             {
                 return new SceneMeshUpdate(
@@ -106,7 +140,9 @@ namespace Yutrel.OfflineRenderer
                     SceneMeshOperation.AddOrReplace,
                     positions,
                     normals,
+                    uvs,
                     indices,
+                    subMeshes,
                     localToWorld);
             }
 
@@ -115,6 +151,8 @@ namespace Yutrel.OfflineRenderer
                 return new SceneMeshUpdate(
                     id,
                     SceneMeshOperation.Transform,
+                    null,
+                    null,
                     null,
                     null,
                     null,
@@ -129,25 +167,68 @@ namespace Yutrel.OfflineRenderer
                     null,
                     null,
                     null,
+                    null,
+                    null,
                     Matrix4x4.identity);
+            }
+        }
+
+        internal readonly struct SceneSubMeshUpdate
+        {
+            internal readonly uint indexOffset;
+            internal readonly uint indexCount;
+            internal readonly Vector3 emissiveColorLinearSrgb;
+            internal readonly float emissiveLuminanceNits;
+            internal readonly bool doubleSided;
+            internal readonly ExternalTextureEncoding textureEncoding;
+            internal readonly Color[] emissivePixels;
+            internal readonly uint textureWidth;
+            internal readonly uint textureHeight;
+            internal readonly Vector2 uvScale;
+            internal readonly Vector2 uvOffset;
+
+            internal SceneSubMeshUpdate(
+                uint indexOffset,
+                uint indexCount,
+                Vector3 emissiveColorLinearSrgb,
+                float emissiveLuminanceNits,
+                bool doubleSided,
+                ExternalTextureEncoding textureEncoding,
+                Color[] emissivePixels,
+                uint textureWidth,
+                uint textureHeight,
+                Vector2 uvScale,
+                Vector2 uvOffset)
+            {
+                this.indexOffset = indexOffset;
+                this.indexCount = indexCount;
+                this.emissiveColorLinearSrgb = emissiveColorLinearSrgb;
+                this.emissiveLuminanceNits = emissiveLuminanceNits;
+                this.doubleSided = doubleSided;
+                this.textureEncoding = textureEncoding;
+                this.emissivePixels = emissivePixels;
+                this.textureWidth = textureWidth;
+                this.textureHeight = textureHeight;
+                this.uvScale = uvScale;
+                this.uvOffset = uvOffset;
             }
         }
 
         internal readonly struct DirectionalLightUpdate
         {
-            internal readonly Color color;
-            internal readonly float intensity;
+            internal readonly Vector3 colorLinearSrgb;
+            internal readonly float illuminanceLux;
             internal readonly Vector3 direction;
             internal readonly bool enabled;
 
             internal DirectionalLightUpdate(
-                Color color,
-                float intensity,
+                Vector3 colorLinearSrgb,
+                float illuminanceLux,
                 Vector3 direction,
                 bool enabled)
             {
-                this.color = color;
-                this.intensity = intensity;
+                this.colorLinearSrgb = colorLinearSrgb;
+                this.illuminanceLux = illuminanceLux;
                 this.direction = direction;
                 this.enabled = enabled;
             }
@@ -272,8 +353,7 @@ namespace Yutrel.OfflineRenderer
             }
 
             var descriptors = new SceneMeshDelta[meshes.Count];
-            var pinnedArrays = new GCHandle[meshes.Count * 3];
-            var pinnedCount = 0;
+            var pinnedArrays = new List<GCHandle>(meshes.Count * 6);
             try
             {
                 for (var meshIndex = 0; meshIndex < meshes.Count; meshIndex++)
@@ -292,20 +372,66 @@ namespace Yutrel.OfflineRenderer
                     if (mesh.operation == SceneMeshOperation.AddOrReplace)
                     {
                         if (mesh.positions == null || mesh.normals == null || mesh.indices == null ||
+                            mesh.subMeshes == null ||
                             mesh.positions.Length == 0 || mesh.normals.Length != mesh.positions.Length ||
-                            mesh.indices.Length == 0)
+                            (mesh.uvs != null && mesh.uvs.Length != mesh.positions.Length) ||
+                            mesh.indices.Length == 0 || mesh.subMeshes.Length == 0)
                         {
                             ReportErrorOnce("Yutrel scene delta contains invalid Mesh geometry.");
                             return false;
                         }
-                        pinnedArrays[pinnedCount] = GCHandle.Alloc(mesh.positions, GCHandleType.Pinned);
-                        descriptor.positions = pinnedArrays[pinnedCount++].AddrOfPinnedObject();
-                        pinnedArrays[pinnedCount] = GCHandle.Alloc(mesh.normals, GCHandleType.Pinned);
-                        descriptor.normals = pinnedArrays[pinnedCount++].AddrOfPinnedObject();
-                        pinnedArrays[pinnedCount] = GCHandle.Alloc(mesh.indices, GCHandleType.Pinned);
-                        descriptor.indices = pinnedArrays[pinnedCount++].AddrOfPinnedObject();
+                        var positionsHandle = GCHandle.Alloc(mesh.positions, GCHandleType.Pinned);
+                        pinnedArrays.Add(positionsHandle);
+                        descriptor.positions = positionsHandle.AddrOfPinnedObject();
+                        var normalsHandle = GCHandle.Alloc(mesh.normals, GCHandleType.Pinned);
+                        pinnedArrays.Add(normalsHandle);
+                        descriptor.normals = normalsHandle.AddrOfPinnedObject();
+                        if (mesh.uvs != null)
+                        {
+                            var uvsHandle = GCHandle.Alloc(mesh.uvs, GCHandleType.Pinned);
+                            pinnedArrays.Add(uvsHandle);
+                            descriptor.uvs = uvsHandle.AddrOfPinnedObject();
+                        }
+                        var indicesHandle = GCHandle.Alloc(mesh.indices, GCHandleType.Pinned);
+                        pinnedArrays.Add(indicesHandle);
+                        descriptor.indices = indicesHandle.AddrOfPinnedObject();
+
+                        var subMeshDescriptors = new SceneSubMeshData[mesh.subMeshes.Length];
+                        for (var subMeshIndex = 0; subMeshIndex < mesh.subMeshes.Length; subMeshIndex++)
+                        {
+                            var subMesh = mesh.subMeshes[subMeshIndex];
+                            var subMeshDescriptor = new SceneSubMeshData
+                            {
+                                indexOffset = subMesh.indexOffset,
+                                indexCount = subMesh.indexCount,
+                                emissiveLuminanceNits = subMesh.emissiveLuminanceNits,
+                                doubleSided = subMesh.doubleSided ? 1u : 0u,
+                                textureEncoding = subMesh.textureEncoding,
+                                textureWidth = subMesh.textureWidth,
+                                textureHeight = subMesh.textureHeight
+                            };
+                            subMeshDescriptor.emissiveColor[0] = subMesh.emissiveColorLinearSrgb.x;
+                            subMeshDescriptor.emissiveColor[1] = subMesh.emissiveColorLinearSrgb.y;
+                            subMeshDescriptor.emissiveColor[2] = subMesh.emissiveColorLinearSrgb.z;
+                            subMeshDescriptor.uvScale[0] = subMesh.uvScale.x;
+                            subMeshDescriptor.uvScale[1] = subMesh.uvScale.y;
+                            subMeshDescriptor.uvOffset[0] = subMesh.uvOffset.x;
+                            subMeshDescriptor.uvOffset[1] = subMesh.uvOffset.y;
+                            if (subMesh.emissivePixels != null)
+                            {
+                                var pixelsHandle = GCHandle.Alloc(subMesh.emissivePixels, GCHandleType.Pinned);
+                                pinnedArrays.Add(pixelsHandle);
+                                subMeshDescriptor.emissivePixels = pixelsHandle.AddrOfPinnedObject();
+                            }
+                            subMeshDescriptors[subMeshIndex] = subMeshDescriptor;
+                        }
+                        var subMeshesHandle = GCHandle.Alloc(subMeshDescriptors, GCHandleType.Pinned);
+                        pinnedArrays.Add(subMeshesHandle);
+                        descriptor.subMeshes = subMeshesHandle.AddrOfPinnedObject();
                         descriptor.vertexCount = (uint)mesh.positions.Length;
                         descriptor.indexCount = (uint)mesh.indices.Length;
+                        descriptor.subMeshCount = (uint)mesh.subMeshes.Length;
+                        descriptor.subMeshStructSize = (uint)sizeof(SceneSubMeshData);
                     }
                     var localToWorld = ToColumnMajor(mesh.localToWorld);
                     for (var i = 0; i < localToWorld.Length; i++)
@@ -330,10 +456,10 @@ namespace Yutrel.OfflineRenderer
                     if (lightUpdate.HasValue)
                     {
                         var light = lightUpdate.Value;
-                        data.light.color[0] = light.color.r;
-                        data.light.color[1] = light.color.g;
-                        data.light.color[2] = light.color.b;
-                        data.light.intensity = light.intensity;
+                        data.light.color[0] = light.colorLinearSrgb.x;
+                        data.light.color[1] = light.colorLinearSrgb.y;
+                        data.light.color[2] = light.colorLinearSrgb.z;
+                        data.light.illuminanceLux = light.illuminanceLux;
                         data.light.direction[0] = light.direction.x;
                         data.light.direction[1] = light.direction.y;
                         data.light.direction[2] = light.direction.z;
@@ -350,7 +476,7 @@ namespace Yutrel.OfflineRenderer
             }
             finally
             {
-                for (var i = 0; i < pinnedCount; i++)
+                for (var i = 0; i < pinnedArrays.Count; i++)
                 {
                     var handle = pinnedArrays[i];
                     if (handle.IsAllocated)

@@ -27,7 +27,7 @@ struct ExternalMeshUpdate
 struct ExternalDirectionalLightState
 {
     luisa::float3 color;
-    float intensity;
+    float illuminance_lux;
     luisa::float3 direction;
     uint32_t enabled;
 };
