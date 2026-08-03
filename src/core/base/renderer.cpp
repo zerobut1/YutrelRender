@@ -9,6 +9,7 @@
 #include "base/geometry.h"
 #include "base/integrator.h"
 #include "base/scene.h"
+#include "environments/distant.h"
 
 namespace Yutrel
 {
@@ -129,6 +130,57 @@ bool Renderer::prepare_external_render() noexcept
 {
     auto integrator = dynamic_cast<ProgressiveIntegrator::Instance*>(m_integrator.get());
     return integrator != nullptr && integrator->prepare_external_render();
+}
+
+bool Renderer::prepare_external_scene_updates(
+    CommandBuffer& command_buffer,
+    luisa::span<const uint64_t> initial_instance_ids,
+    const Surface* default_surface) noexcept
+{
+    return m_geometry != nullptr && m_geometry->prepare_external_updates(
+                                        command_buffer,
+                                        initial_instance_ids,
+                                        default_surface);
+}
+
+bool Renderer::update_external_scene(
+    CommandBuffer& command_buffer,
+    luisa::span<const ExternalMeshUpdate> mesh_updates,
+    luisa::optional<ExternalDirectionalLightState> light_update) noexcept
+{
+    if (m_geometry == nullptr)
+    {
+        return false;
+    }
+    if (light_update)
+    {
+        auto& light = *light_update;
+        auto direction_length_squared = dot(light.direction, light.direction);
+        if (!std::isfinite(light.color.x) || !std::isfinite(light.color.y) ||
+            !std::isfinite(light.color.z) || light.color.x < 0.0f ||
+            light.color.y < 0.0f || light.color.z < 0.0f ||
+            !std::isfinite(light.intensity) || light.intensity < 0.0f ||
+            !std::isfinite(light.direction.x) || !std::isfinite(light.direction.y) ||
+            !std::isfinite(light.direction.z) || !std::isfinite(direction_length_squared) ||
+            std::abs(direction_length_squared - 1.0f) > 1e-4f || light.enabled > 1u)
+        {
+            return false;
+        }
+        if (dynamic_cast<DistantEnvironment::Instance*>(m_environment.get()) == nullptr)
+        {
+            return false;
+        }
+    }
+    if (!m_geometry->update_external(command_buffer, mesh_updates))
+    {
+        return false;
+    }
+    if (light_update)
+    {
+        static_cast<DistantEnvironment::Instance*>(m_environment.get())
+            ->update_external_state(command_buffer, *light_update);
+    }
+    return true;
 }
 
 bool Renderer::update_external_camera(

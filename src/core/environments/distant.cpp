@@ -7,6 +7,37 @@
 namespace Yutrel
 {
 
+DistantEnvironment::Instance::Instance(
+    Renderer& renderer,
+    CommandBuffer& command_buffer,
+    const DistantEnvironment* environment,
+    const Texture::Instance* emission) noexcept
+    : Environment::Instance{renderer, environment},
+      _emission{emission},
+      _external_state{renderer.device().create_buffer<float4>(2u)}
+{
+    auto initial_state = std::array{
+        make_float4(1.0f, 1.0f, 1.0f, 1.0f),
+        make_float4(environment->direction(), 1.0f),
+    };
+    command_buffer
+        << _external_state.copy_from(luisa::span{initial_state})
+        << commit();
+}
+
+void DistantEnvironment::Instance::update_external_state(
+    CommandBuffer& command_buffer,
+    const ExternalDirectionalLightState& state) noexcept
+{
+    auto data = std::array{
+        make_float4(state.color, state.intensity),
+        make_float4(state.direction, state.enabled != 0u ? 1.0f : 0.0f),
+    };
+    command_buffer
+        << _external_state.copy_from(luisa::span{data})
+        << commit();
+}
+
 bool DistantEnvironment::is_black() const noexcept
 {
     if (_scale == 0.0f)
@@ -38,7 +69,13 @@ Environment::Sample DistantEnvironment::Instance::sample(
     static_cast<void>(allow_incomplete_pdf);
     Interaction it{};
     auto environment = base<DistantEnvironment>();
-    auto L = _emission->evaluate_illuminant_spectrum(it, swl, time).value * environment->scale();
+    auto color_and_intensity = _external_state->read(0u);
+    auto direction_and_enabled = _external_state->read(1u);
+    auto encoded_color = renderer().spectrum()->encode_srgb_illuminant(
+        max(color_and_intensity.xyz(), 0.0f));
+    auto color = renderer().spectrum()->decode_illuminant(swl, encoded_color).value;
+    auto L = _emission->evaluate_illuminant_spectrum(it, swl, time).value *
+             color * environment->scale() * color_and_intensity.w * direction_and_enabled.w;
     return Sample{
         .eval = {
             .L = std::move(L),
@@ -46,7 +83,7 @@ Environment::Sample DistantEnvironment::Instance::sample(
             .p = make_float3(0.0f),
             .ng = make_float3(0.0f),
         },
-        .wi = environment->direction(),
+        .wi = direction_and_enabled.xyz(),
         .delta = true,
     };
 }
@@ -55,7 +92,7 @@ luisa::unique_ptr<Environment::Instance> DistantEnvironment::build(
     Renderer& renderer, CommandBuffer& command_buffer) const noexcept
 {
     auto emission = renderer.build_texture(command_buffer, _emission);
-    return luisa::make_unique<Instance>(renderer, this, emission);
+    return luisa::make_unique<Instance>(renderer, command_buffer, this, emission);
 }
 
 luisa::optional<luisa::string> DistantEnvironmentSpec::validate() const noexcept

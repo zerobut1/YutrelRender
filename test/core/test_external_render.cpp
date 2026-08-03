@@ -24,6 +24,13 @@ using namespace Yutrel;
 namespace
 {
 
+struct RegionResult
+{
+    bool finite{true};
+    bool left_radiance{};
+    bool right_radiance{};
+};
+
 [[nodiscard]] luisa::unique_ptr<Scene> create_scene(uint2 resolution)
 {
     SceneSpecBuilder builder;
@@ -202,6 +209,59 @@ namespace
     return has_sample_count(pixels_a, 2u) && has_sample_count(pixels_b, 1u);
 }
 
+[[nodiscard]] RegionResult render_regions(
+    Device& device,
+    Stream& stream,
+    Renderer& renderer,
+    uint2 resolution)
+{
+    auto accumulation = device.create_image<float>(PixelStorage::FLOAT4, resolution);
+    Kernel2D clear = [](ImageFloat image) noexcept
+    {
+        image.write(dispatch_id().xy(), make_float4(0.0f));
+    };
+    auto clear_shader = device.compile(clear);
+    CommandBuffer commands{stream};
+    commands << clear_shader(accumulation).dispatch(resolution);
+    if (!renderer.render_external_sample(commands, accumulation, resolution, 0u))
+    {
+        commands << commit();
+        return {.finite = false};
+    }
+    luisa::vector<float4> pixels(static_cast<size_t>(resolution.x) * resolution.y);
+    commands << accumulation.copy_to(luisa::span{pixels}) << synchronize();
+
+    RegionResult result;
+    for (auto pixel_index = 0u; pixel_index < pixels.size(); pixel_index++)
+    {
+        auto pixel = pixels[pixel_index];
+        if (!std::isfinite(pixel.x) || !std::isfinite(pixel.y) ||
+            !std::isfinite(pixel.z) || !std::isfinite(pixel.w) || pixel.w != 1.0f)
+        {
+            result.finite = false;
+            continue;
+        }
+        auto has_radiance = pixel.x > 0.0f || pixel.y > 0.0f || pixel.z > 0.0f;
+        auto x = pixel_index % resolution.x;
+        result.left_radiance |= has_radiance && x < resolution.x / 2u;
+        result.right_radiance |= has_radiance && x >= resolution.x / 2u;
+    }
+    return result;
+}
+
+[[nodiscard]] luisa::unique_ptr<InlineMesh> create_dynamic_quad()
+{
+    return luisa::make_unique<InlineMesh>(
+        luisa::vector{
+            make_float3(-0.55f, -0.6f, -3.0f),
+            make_float3(0.55f, -0.6f, -3.0f),
+            make_float3(0.55f, 0.6f, -3.0f),
+            make_float3(-0.55f, 0.6f, -3.0f)},
+        luisa::vector(4u, make_float3(0.0f, 0.0f, 1.0f)),
+        luisa::vector<float2>{},
+        luisa::vector{make_uint3(0u, 1u, 2u), make_uint3(0u, 2u, 3u)});
+}
+
 }// namespace
 
 int main(int argc, char* argv[])
@@ -216,7 +276,32 @@ int main(int argc, char* argv[])
     auto resolution = make_uint2(16u, 16u);
     auto scene = create_scene(resolution);
     auto renderer = Renderer::create(device, stream, *scene);
-    if (!renderer || !renderer->prepare_external_render())
+    if (!renderer)
+    {
+        return 1;
+    }
+    auto instances = scene->instances();
+    auto initial_ids = std::array<uint64_t, 2u>{1u, 2u};
+    CommandBuffer scene_setup{stream};
+    if (!renderer->prepare_external_scene_updates(
+            scene_setup,
+            initial_ids,
+            instances[0].surface) ||
+        !renderer->update_external_scene(
+            scene_setup,
+            {},
+            ExternalDirectionalLightState{
+                .color = make_float3(1.0f),
+                .intensity = 1.0f,
+                .direction = make_float3(0.0f, 0.0f, 1.0f),
+                .enabled = 1u,
+            }))
+    {
+        scene_setup << commit();
+        return 1;
+    }
+    scene_setup << synchronize();
+    if (!renderer->prepare_external_render())
     {
         return 1;
     }
@@ -253,6 +338,140 @@ int main(int argc, char* argv[])
     if (!render_interleaved_views(device, stream, *renderer))
     {
         std::cerr << "External interleaved-view accumulation test failed.\n";
+        return 1;
+    }
+
+    camera.resolution = resolution;
+    camera.vertical_fov_degrees = 45.0f;
+    auto moved_left = make_float4x4(1.0f);
+    moved_left[3] = make_float4(-10.0f, 0.0f, 0.0f, 1.0f);
+    auto move_update = ExternalMeshUpdate{
+        .id = 1u,
+        .operation = ExternalMeshOp::transform,
+        .local_to_world = moved_left,
+    };
+    CommandBuffer move_commands{stream};
+    if (!renderer->update_external_camera(move_commands, camera) ||
+        !renderer->update_external_scene(move_commands, luisa::span{&move_update, 1u}, luisa::nullopt))
+    {
+        move_commands << commit();
+        return 1;
+    }
+    move_commands << synchronize();
+    auto moved_result = render_regions(device, stream, *renderer, resolution);
+    if (!moved_result.finite || moved_result.left_radiance || !moved_result.right_radiance)
+    {
+        std::cerr << "External transform update test failed.\n";
+        return 1;
+    }
+
+    auto dynamic_shape = create_dynamic_quad();
+    auto dynamic_transform = make_float4x4(1.0f);
+    dynamic_transform[3] = make_float4(-0.6f, 0.0f, 0.0f, 1.0f);
+    auto add_update = ExternalMeshUpdate{
+        .id = 3u,
+        .operation = ExternalMeshOp::add_or_replace,
+        .shape = dynamic_shape.get(),
+        .local_to_world = dynamic_transform,
+    };
+    CommandBuffer add_commands{stream};
+    if (!renderer->update_external_scene(add_commands, luisa::span{&add_update, 1u}, luisa::nullopt))
+    {
+        add_commands << commit();
+        return 1;
+    }
+    add_commands << synchronize();
+    auto added_result = render_regions(device, stream, *renderer, resolution);
+    if (!added_result.finite || !added_result.left_radiance || !added_result.right_radiance)
+    {
+        std::cerr << "External Mesh add test failed.\n";
+        return 1;
+    }
+
+    auto replacement_shape = create_dynamic_quad();
+    auto replacement_transform = make_float4x4(1.0f);
+    replacement_transform[3] = make_float4(0.6f, 0.0f, 0.0f, 1.0f);
+    auto slot_updates = std::array{
+        ExternalMeshUpdate{
+            .id = 2u,
+            .operation = ExternalMeshOp::remove,
+        },
+        ExternalMeshUpdate{
+            .id = 3u,
+            .operation = ExternalMeshOp::remove,
+        },
+        ExternalMeshUpdate{
+            .id = 4u,
+            .operation = ExternalMeshOp::add_or_replace,
+            .shape = replacement_shape.get(),
+            .local_to_world = replacement_transform,
+        },
+    };
+    CommandBuffer slot_commands{stream};
+    if (!renderer->update_external_scene(slot_commands, slot_updates, luisa::nullopt))
+    {
+        slot_commands << commit();
+        return 1;
+    }
+    slot_commands << synchronize();
+    auto reused_result = render_regions(device, stream, *renderer, resolution);
+    if (!reused_result.finite || reused_result.left_radiance || !reused_result.right_radiance)
+    {
+        std::cerr << "External Mesh remove/slot reuse test failed.\n";
+        return 1;
+    }
+
+    auto disabled_light = ExternalDirectionalLightState{
+        .color = make_float3(1.0f),
+        .intensity = 1.0f,
+        .direction = make_float3(0.0f, 0.0f, 1.0f),
+        .enabled = 0u,
+    };
+    CommandBuffer light_commands{stream};
+    if (!renderer->update_external_scene(light_commands, {}, disabled_light))
+    {
+        light_commands << commit();
+        return 1;
+    }
+    light_commands << synchronize();
+    auto dark_result = render_regions(device, stream, *renderer, resolution);
+    if (!dark_result.finite || dark_result.left_radiance || dark_result.right_radiance)
+    {
+        std::cerr << "External Directional Light disable test failed.\n";
+        return 1;
+    }
+
+    auto enabled_light = disabled_light;
+    enabled_light.color = make_float3(0.5f, 1.0f, 0.25f);
+    enabled_light.intensity = 2.0f;
+    enabled_light.enabled = 1u;
+    CommandBuffer enable_light_commands{stream};
+    if (!renderer->update_external_scene(enable_light_commands, {}, enabled_light))
+    {
+        enable_light_commands << commit();
+        return 1;
+    }
+    enable_light_commands << synchronize();
+    auto lit_result = render_regions(device, stream, *renderer, resolution);
+    if (!lit_result.finite || lit_result.left_radiance || !lit_result.right_radiance)
+    {
+        std::cerr << "External Directional Light update test failed.\n";
+        return 1;
+    }
+
+    auto reversed_light = enabled_light;
+    reversed_light.direction = make_float3(0.0f, 0.0f, -1.0f);
+    CommandBuffer reverse_light_commands{stream};
+    if (!renderer->update_external_scene(reverse_light_commands, {}, reversed_light))
+    {
+        reverse_light_commands << commit();
+        return 1;
+    }
+    reverse_light_commands << synchronize();
+    auto reversed_result = render_regions(device, stream, *renderer, resolution);
+    if (!reversed_result.finite || reversed_result.left_radiance || reversed_result.right_radiance)
+    {
+        std::cerr << "External Directional Light direction test failed.\n";
         return 1;
     }
     return 0;

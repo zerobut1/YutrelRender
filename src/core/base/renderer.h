@@ -6,6 +6,7 @@
 
 #include "base/camera.h"
 #include "base/environment.h"
+#include "base/external_scene.h"
 #include "base/integrator.h"
 #include "base/light.h"
 #include "base/medium.h"
@@ -164,6 +165,14 @@ public:
     void render_interactive(Stream& stream);
 
     [[nodiscard]] bool prepare_external_render() noexcept;
+    [[nodiscard]] bool prepare_external_scene_updates(
+        CommandBuffer& command_buffer,
+        luisa::span<const uint64_t> initial_instance_ids,
+        const Surface* default_surface) noexcept;
+    [[nodiscard]] bool update_external_scene(
+        CommandBuffer& command_buffer,
+        luisa::span<const ExternalMeshUpdate> mesh_updates,
+        luisa::optional<ExternalDirectionalLightState> light_update) noexcept;
     [[nodiscard]] bool update_external_camera(
         CommandBuffer& command_buffer,
         const ExternalCameraState& state) noexcept;

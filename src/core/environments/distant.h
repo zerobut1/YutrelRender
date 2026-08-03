@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "base/environment.h"
+#include "base/external_scene.h"
 #include "base/texture.h"
 #include "scene/spec_base.h"
 
@@ -35,11 +36,16 @@ class DistantEnvironment::Instance final : public Environment::Instance
 {
 private:
     const Texture::Instance* _emission;
+    Buffer<float4> _external_state;
 
 public:
-    Instance(const Renderer& renderer, const DistantEnvironment* environment,
-             const Texture::Instance* emission) noexcept
-        : Environment::Instance{renderer, environment}, _emission{emission} {}
+    Instance(Renderer& renderer, CommandBuffer& command_buffer,
+             const DistantEnvironment* environment,
+             const Texture::Instance* emission) noexcept;
+
+    void update_external_state(
+        CommandBuffer& command_buffer,
+        const ExternalDirectionalLightState& state) noexcept;
 
     [[nodiscard]] Evaluation evaluate(
         Expr<float3> wi, const SampledWavelengths& swl,

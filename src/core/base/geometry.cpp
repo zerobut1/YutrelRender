@@ -11,11 +11,15 @@ namespace Yutrel
 {
 void Geometry::build(CommandBuffer& command_buffer, luisa::span<const ShapeInstance> instances) noexcept
 {
-    m_accel = m_renderer.device().create_accel({});
+    m_accel = m_renderer.device().create_accel(AccelOption{
+        .hint = AccelOption::UsageHint::FAST_TRACE,
+        .allow_update = true,
+    });
 
     for (auto& instance : instances)
     {
-        process_instance(command_buffer, instance);
+        auto prepared = prepare_instance(command_buffer, instance);
+        append_instance(prepared, instance.transform);
     }
     LUISA_INFO_WITH_LOCATION("Geometry built with {} unique triangles ({} instanced).",
                              m_triangle_count,
@@ -30,153 +34,338 @@ void Geometry::build(CommandBuffer& command_buffer, luisa::span<const ShapeInsta
         << commit();
 }
 
-void Geometry::process_instance(CommandBuffer& command_buffer, const ShapeInstance& instance) noexcept
+Geometry::MeshData Geometry::prepare_mesh(
+    CommandBuffer& command_buffer,
+    const Shape* shape) noexcept
 {
-    auto shape   = instance.shape;
-    auto surface = instance.surface;
-    auto light   = instance.light;
-
-    if (shape->is_mesh())
+    if (auto it = m_meshes.find(shape); it != m_meshes.end())
     {
-        auto mesh = [&]
-        {
-            if (auto it = m_meshes.find(shape); it != m_meshes.end())
-            {
-                return it->second;
-            }
-            auto mesh_gemo = [&]
-            {
-                auto [vertices, triangles] = shape->mesh();
-                LUISA_ASSERT(!vertices.empty() && !triangles.empty(), "Empty mesh.");
-                auto hash = luisa::hash64(vertices.data(), vertices.size_bytes(), luisa::hash64_default_seed);
-                hash      = luisa::hash64(triangles.data(), triangles.size_bytes(), hash);
-                if (auto mesh_it = m_mesh_cache.find(hash); mesh_it != m_mesh_cache.end())
-                {
-                    return mesh_it->second;
-                }
-                // create mesh
-                m_triangle_count += triangles.size();
-                auto vertex_buffer   = m_renderer.create<Buffer<Vertex>>(vertices.size());
-                auto triangle_buffer = m_renderer.create<Buffer<Triangle>>(triangles.size());
-                auto mesh            = m_renderer.create<compute::Mesh>(*vertex_buffer, *triangle_buffer, AccelOption{});
-                command_buffer
-                    << vertex_buffer->copy_from(vertices.data())
-                    << triangle_buffer->copy_from(triangles.data())
-                    << commit()
-                    << mesh->build()
-                    << commit();
-                auto vertex_buffer_id   = m_renderer.register_bindless(vertex_buffer->view());
-                auto triangle_buffer_id = m_renderer.register_bindless(triangle_buffer->view());
-                // compute alisa table
-                luisa::vector<float> triangle_areas(triangles.size());
-                for (auto i = 0u; i < triangles.size(); i++)
-                {
-                    auto t            = triangles[i];
-                    auto v0           = vertices[t.i0].position();
-                    auto v1           = vertices[t.i1].position();
-                    auto v2           = vertices[t.i2].position();
-                    triangle_areas[i] = std::abs(length(cross(v1 - v0, v2 - v0)));
-                }
-                auto [alias_table, pdf]                         = create_alias_table(triangle_areas);
-                auto [alisa_table_buffer_view, alias_buffer_id] = m_renderer.bindless_arena_buffer<AliasEntry>(alias_table.size());
-                auto [pdf_buffer_view, pdf_buffer_id]           = m_renderer.bindless_arena_buffer<float>(pdf.size());
-                LUISA_ASSERT(triangle_buffer_id - vertex_buffer_id == Shape::Handle::triangle_buffer_id_offset, "Invalid.");
-                LUISA_ASSERT(alias_buffer_id - vertex_buffer_id == Shape::Handle::alias_table_buffer_id_offset, "Invalid.");
-                LUISA_ASSERT(pdf_buffer_id - vertex_buffer_id == Shape::Handle::pdf_buffer_id_offset, "Invalid.");
-                command_buffer
-                    << alisa_table_buffer_view.copy_from(alias_table.data())
-                    << pdf_buffer_view.copy_from(pdf.data())
-                    << commit();
-
-                auto geom = MeshGeometry{
-                    .resource       = mesh,
-                    .buffer_id_base = vertex_buffer_id};
-                m_mesh_cache.emplace(hash, geom);
-                return geom;
-            }();
-
-            auto encode_fixed_point = [](float x) noexcept
-            {
-                return static_cast<uint16_t>(std::clamp(
-                    std::round(x * 65535.f),
-                    0.f,
-                    65535.f));
-            };
-
-            MeshData data{
-                .resource                = mesh_gemo.resource,
-                .geometry_buffer_id_base = mesh_gemo.buffer_id_base,
-                .vertex_properties       = shape->vertex_properties()};
-            m_meshes.emplace(shape, data);
-            return data;
-        }();
-
-        auto instance_id = static_cast<uint>(m_accel.size());
-
-        // surfaces
-        auto surface_tag = 0u;
-        auto properties  = mesh.vertex_properties;
-        auto maybe_non_opaque = false;
-        if (surface && (!surface->is_null() || surface->maybe_non_opaque()))
-        {
-            surface_tag = m_renderer.register_surface(command_buffer, surface);
-            if (!surface->is_null())
-            {
-                properties |= Shape::property_flag_has_surface;
-            }
-            maybe_non_opaque = m_renderer.surfaces().impl(surface_tag)->maybe_non_opaque();
-            if (maybe_non_opaque)
-            {
-                properties |= Shape::property_flag_maybe_non_opaque;
-                m_any_non_opaque = true;
-                if (std::find(m_non_opaque_surface_tags.begin(),
-                              m_non_opaque_surface_tags.end(),
-                              surface_tag) == m_non_opaque_surface_tags.end())
-                {
-                    m_non_opaque_surface_tags.emplace_back(surface_tag);
-                }
-            }
-        }
-
-        auto inside_medium_tag  = instance.inside_medium ? m_renderer.register_medium(command_buffer, instance.inside_medium) : Medium::vacuum_tag;
-        auto outside_medium_tag = instance.outside_medium ? m_renderer.register_medium(command_buffer, instance.outside_medium) : Medium::vacuum_tag;
-        if (inside_medium_tag != Medium::vacuum_tag || outside_medium_tag != Medium::vacuum_tag)
-        {
-            properties |= Shape::property_flag_has_medium;
-        }
-
-        m_accel.emplace_back(*mesh.resource, instance.transform, 0xffu, !maybe_non_opaque);
-
-        // lights
-        auto light_tag = 0u;
-        if (light && !light->is_null())
-        {
-            light_tag = m_renderer.register_light(command_buffer, light);
-            properties |= Shape::property_flag_has_light;
-        }
-
-        m_instances.emplace_back(
-            Shape::Handle::encode(
-                mesh.geometry_buffer_id_base,
-                properties,
-                surface_tag,
-                light_tag,
-                0,
-                mesh.resource->triangle_count(),
-                0,
-                0));
-        m_medium_interfaces.emplace_back(make_uint2(inside_medium_tag, outside_medium_tag));
-
-        if (properties & Shape::property_flag_has_light)
-        {
-            m_instanced_lights.emplace_back(
-                Light::Handle{
-                    .instance_id = instance_id,
-                    .light_tag   = light_tag});
-        }
-
-        m_instanced_triangle_count += mesh.resource->triangle_count();
+        return it->second;
     }
+    auto [vertices, triangles] = shape->mesh();
+    LUISA_ASSERT(!vertices.empty() && !triangles.empty(), "Empty mesh.");
+    auto hash = luisa::hash64(vertices.data(), vertices.size_bytes(), luisa::hash64_default_seed);
+    hash      = luisa::hash64(triangles.data(), triangles.size_bytes(), hash);
+    auto mesh_geometry = [&]
+    {
+        if (auto mesh_it = m_mesh_cache.find(hash); mesh_it != m_mesh_cache.end())
+        {
+            return mesh_it->second;
+        }
+        m_triangle_count += triangles.size();
+        auto vertex_buffer   = m_renderer.create<Buffer<Vertex>>(vertices.size());
+        auto triangle_buffer = m_renderer.create<Buffer<Triangle>>(triangles.size());
+        auto mesh            = m_renderer.create<compute::Mesh>(*vertex_buffer, *triangle_buffer, AccelOption{});
+        command_buffer
+            << vertex_buffer->copy_from(vertices.data())
+            << triangle_buffer->copy_from(triangles.data())
+            << commit()
+            << mesh->build()
+            << commit();
+        auto vertex_buffer_id   = m_renderer.register_bindless(vertex_buffer->view());
+        auto triangle_buffer_id = m_renderer.register_bindless(triangle_buffer->view());
+        luisa::vector<float> triangle_areas(triangles.size());
+        for (auto i = 0u; i < triangles.size(); i++)
+        {
+            auto t            = triangles[i];
+            auto v0           = vertices[t.i0].position();
+            auto v1           = vertices[t.i1].position();
+            auto v2           = vertices[t.i2].position();
+            triangle_areas[i] = std::abs(length(cross(v1 - v0, v2 - v0)));
+        }
+        auto [alias_table, pdf]                         = create_alias_table(triangle_areas);
+        auto [alias_table_buffer_view, alias_buffer_id] = m_renderer.bindless_arena_buffer<AliasEntry>(alias_table.size());
+        auto [pdf_buffer_view, pdf_buffer_id]           = m_renderer.bindless_arena_buffer<float>(pdf.size());
+        LUISA_ASSERT(triangle_buffer_id - vertex_buffer_id == Shape::Handle::triangle_buffer_id_offset, "Invalid.");
+        LUISA_ASSERT(alias_buffer_id - vertex_buffer_id == Shape::Handle::alias_table_buffer_id_offset, "Invalid.");
+        LUISA_ASSERT(pdf_buffer_id - vertex_buffer_id == Shape::Handle::pdf_buffer_id_offset, "Invalid.");
+        command_buffer
+            << alias_table_buffer_view.copy_from(alias_table.data())
+            << pdf_buffer_view.copy_from(pdf.data())
+            << commit();
+        auto geometry = MeshGeometry{
+            .resource       = mesh,
+            .buffer_id_base = vertex_buffer_id};
+        m_mesh_cache.emplace(hash, geometry);
+        return geometry;
+    }();
+
+    MeshData data{
+        .resource                = mesh_geometry.resource,
+        .geometry_buffer_id_base = mesh_geometry.buffer_id_base,
+        .vertex_properties       = shape->vertex_properties()};
+    m_meshes.emplace(shape, data);
+    return data;
+}
+
+Geometry::PreparedInstance Geometry::prepare_instance(
+    CommandBuffer& command_buffer,
+    const ShapeInstance& instance) noexcept
+{
+    LUISA_ASSERT(instance.shape != nullptr && instance.shape->is_mesh(), "External shape is not a mesh.");
+    auto mesh = prepare_mesh(command_buffer, instance.shape);
+    auto surface_tag = 0u;
+    auto properties = mesh.vertex_properties;
+    auto maybe_non_opaque = false;
+    if (instance.surface && (!instance.surface->is_null() || instance.surface->maybe_non_opaque()))
+    {
+        surface_tag = m_renderer.register_surface(command_buffer, instance.surface);
+        if (!instance.surface->is_null())
+        {
+            properties |= Shape::property_flag_has_surface;
+        }
+        maybe_non_opaque = m_renderer.surfaces().impl(surface_tag)->maybe_non_opaque();
+        if (maybe_non_opaque)
+        {
+            properties |= Shape::property_flag_maybe_non_opaque;
+            m_any_non_opaque = true;
+            if (std::find(m_non_opaque_surface_tags.begin(),
+                          m_non_opaque_surface_tags.end(),
+                          surface_tag) == m_non_opaque_surface_tags.end())
+            {
+                m_non_opaque_surface_tags.emplace_back(surface_tag);
+            }
+        }
+    }
+
+    auto inside_medium_tag = instance.inside_medium
+                                 ? m_renderer.register_medium(command_buffer, instance.inside_medium)
+                                 : Medium::vacuum_tag;
+    auto outside_medium_tag = instance.outside_medium
+                                  ? m_renderer.register_medium(command_buffer, instance.outside_medium)
+                                  : Medium::vacuum_tag;
+    if (inside_medium_tag != Medium::vacuum_tag || outside_medium_tag != Medium::vacuum_tag)
+    {
+        properties |= Shape::property_flag_has_medium;
+    }
+
+    auto light_tag = 0u;
+    if (instance.light && !instance.light->is_null())
+    {
+        light_tag = m_renderer.register_light(command_buffer, instance.light);
+        properties |= Shape::property_flag_has_light;
+    }
+    return PreparedInstance{
+        .mesh = mesh,
+        .encoded = Shape::Handle::encode(
+            mesh.geometry_buffer_id_base,
+            properties,
+            surface_tag,
+            light_tag,
+            0u,
+            mesh.resource->triangle_count(),
+            0.0f,
+            0.0f),
+        .medium_interface = make_uint2(inside_medium_tag, outside_medium_tag),
+        .light_tag = light_tag,
+        .has_light = (properties & Shape::property_flag_has_light) != 0u,
+        .opaque = !maybe_non_opaque,
+    };
+}
+
+void Geometry::append_instance(
+    const PreparedInstance& instance,
+    float4x4 transform) noexcept
+{
+    auto instance_id = static_cast<uint>(m_accel.size());
+    m_accel.emplace_back(*instance.mesh.resource, transform, 0xffu, instance.opaque);
+    m_instances.emplace_back(instance.encoded);
+    m_medium_interfaces.emplace_back(instance.medium_interface);
+    if (instance.has_light)
+    {
+        m_instanced_lights.emplace_back(Light::Handle{
+            .instance_id = instance_id,
+            .light_tag = instance.light_tag,
+        });
+    }
+    m_instanced_triangle_count += instance.mesh.resource->triangle_count();
+}
+
+bool Geometry::prepare_external_updates(
+    CommandBuffer& command_buffer,
+    luisa::span<const uint64_t> initial_instance_ids,
+    const Surface* default_surface) noexcept
+{
+    if (m_external_updates_enabled || default_surface == nullptr ||
+        default_surface->maybe_non_opaque() ||
+        initial_instance_ids.size() != m_instances.size() ||
+        initial_instance_ids.size() > external_instance_capacity ||
+        !m_instanced_lights.empty())
+    {
+        return false;
+    }
+    luisa::unordered_map<uint64_t, uint> slots;
+    slots.reserve(initial_instance_ids.size());
+    for (auto i = 0u; i < initial_instance_ids.size(); i++)
+    {
+        if (!slots.emplace(initial_instance_ids[i], i).second)
+        {
+            return false;
+        }
+    }
+
+    m_external_updates_enabled = true;
+    m_external_surface = default_surface;
+    m_external_high_water = static_cast<uint>(initial_instance_ids.size());
+    m_external_slots = std::move(slots);
+    m_external_ids.assign(external_instance_capacity, 0u);
+    m_external_active.assign(external_instance_capacity, 0u);
+    for (auto i = 0u; i < initial_instance_ids.size(); i++)
+    {
+        m_external_ids[i] = initial_instance_ids[i];
+        m_external_active[i] = 1u;
+    }
+    m_instances.resize(external_instance_capacity, make_uint4(0u));
+    m_medium_interfaces.resize(external_instance_capacity, make_uint2(0u));
+    m_instance_buffer = m_renderer.device().create_buffer<uint4>(external_instance_capacity);
+    m_medium_interface_buffer = m_renderer.device().create_buffer<uint2>(external_instance_capacity);
+    command_buffer
+        << m_instance_buffer.copy_from(m_instances.data())
+        << m_medium_interface_buffer.copy_from(m_medium_interfaces.data());
+    return true;
+}
+
+void Geometry::upload_external_slot(CommandBuffer& command_buffer, uint slot) noexcept
+{
+    command_buffer
+        << m_instance_buffer.view().subview(slot, 1u).copy_from(luisa::span{&m_instances[slot], 1u})
+        << m_medium_interface_buffer.view().subview(slot, 1u).copy_from(luisa::span{&m_medium_interfaces[slot], 1u});
+}
+
+bool Geometry::update_external(
+    CommandBuffer& command_buffer,
+    luisa::span<const ExternalMeshUpdate> updates) noexcept
+{
+    if (!m_external_updates_enabled)
+    {
+        return false;
+    }
+
+    luisa::unordered_set<uint64_t> changed_ids;
+    auto new_instance_count = 0u;
+    auto removed_instance_count = 0u;
+    for (auto& update : updates)
+    {
+        if (!changed_ids.emplace(update.id).second)
+        {
+            return false;
+        }
+        auto existing = m_external_slots.find(update.id);
+        switch (update.operation)
+        {
+            case ExternalMeshOp::add_or_replace:
+                if (update.shape == nullptr || !update.shape->is_mesh() ||
+                    update.shape->mesh().vertices.empty() || update.shape->mesh().triangles.empty() ||
+                    validate_camera_to_world(update.local_to_world))
+                {
+                    return false;
+                }
+                new_instance_count += existing == m_external_slots.end() ? 1u : 0u;
+                break;
+            case ExternalMeshOp::transform:
+                if (existing == m_external_slots.end() ||
+                    validate_camera_to_world(update.local_to_world))
+                {
+                    return false;
+                }
+                break;
+            case ExternalMeshOp::remove:
+                if (existing == m_external_slots.end())
+                {
+                    return false;
+                }
+                removed_instance_count++;
+                break;
+            default:
+                return false;
+        }
+    }
+    auto available_slots = static_cast<uint64_t>(m_external_free_slots.size()) +
+                           external_instance_capacity - m_external_high_water +
+                           removed_instance_count;
+    if (new_instance_count > available_slots)
+    {
+        return false;
+    }
+
+    auto accel_dirty = false;
+    for (auto& update : updates)
+    {
+        if (update.operation != ExternalMeshOp::remove)
+        {
+            continue;
+        }
+        auto slot = m_external_slots.at(update.id);
+        m_accel.set_visibility_on_update(slot, 0u);
+        m_external_slots.erase(update.id);
+        m_external_ids[slot] = 0u;
+        m_external_active[slot] = 0u;
+        m_external_free_slots.emplace_back(slot);
+        m_instances[slot] = make_uint4(0u);
+        m_medium_interfaces[slot] = make_uint2(0u);
+        upload_external_slot(command_buffer, slot);
+        accel_dirty = true;
+    }
+
+    for (auto& update : updates)
+    {
+        if (update.operation != ExternalMeshOp::add_or_replace)
+        {
+            continue;
+        }
+        auto prepared = prepare_instance(
+            command_buffer,
+            ShapeInstance{
+                .shape = update.shape,
+                .surface = m_external_surface,
+                .transform = update.local_to_world,
+            });
+        auto existing = m_external_slots.find(update.id);
+        uint slot;
+        if (existing != m_external_slots.end())
+        {
+            slot = existing->second;
+            m_accel.set(slot, *prepared.mesh.resource, update.local_to_world, 0xffu, prepared.opaque);
+        }
+        else if (!m_external_free_slots.empty())
+        {
+            slot = m_external_free_slots.back();
+            m_external_free_slots.pop_back();
+            m_accel.set(slot, *prepared.mesh.resource, update.local_to_world, 0xffu, prepared.opaque);
+            m_external_slots.emplace(update.id, slot);
+        }
+        else
+        {
+            slot = m_external_high_water++;
+            m_accel.emplace_back(*prepared.mesh.resource, update.local_to_world, 0xffu, prepared.opaque);
+            m_external_slots.emplace(update.id, slot);
+        }
+        m_external_ids[slot] = update.id;
+        m_external_active[slot] = 1u;
+        m_instances[slot] = prepared.encoded;
+        m_medium_interfaces[slot] = prepared.medium_interface;
+        upload_external_slot(command_buffer, slot);
+        accel_dirty = true;
+    }
+
+    for (auto& update : updates)
+    {
+        if (update.operation == ExternalMeshOp::transform)
+        {
+            m_accel.set_transform_on_update(m_external_slots.at(update.id), update.local_to_world);
+            accel_dirty = true;
+        }
+    }
+
+    if (m_renderer.bindless_array().dirty())
+    {
+        command_buffer << m_renderer.bindless_array().update();
+    }
+    if (accel_dirty)
+    {
+        command_buffer << m_accel.build(AccelBuildRequest::PREFER_UPDATE);
+    }
+    return true;
 }
 
 Shape::Handle Geometry::instance(Expr<uint> index) const noexcept

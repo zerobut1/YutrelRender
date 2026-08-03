@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <unordered_set>
 
 #include <luisa/backends/ext/native_resource_ext.hpp>
 #include <luisa/core/logging.h>
@@ -37,9 +38,10 @@ namespace yutrel::unity {
 using namespace luisa;
 using namespace luisa::compute;
 
-constexpr uint32_t abi_version = 4u;
+constexpr uint32_t abi_version = 5u;
 constexpr int clear_event_id = 0;
 constexpr int path_trace_event_id = 1;
+constexpr size_t external_instance_capacity = 4096u;
 
 struct ClearEventData {
     uint32_t abi_version;
@@ -47,7 +49,16 @@ struct ClearEventData {
     ID3D12Resource *output;
 };
 
-struct StaticMeshData {
+enum SceneMeshOperation : uint32_t {
+    mesh_add_or_replace = 1u,
+    mesh_transform = 2u,
+    mesh_remove = 3u,
+};
+
+struct SceneMeshDelta {
+    uint64_t mesh_id;
+    uint32_t operation;
+    uint32_t reserved;
     const float *positions;
     const float *normals;
     const uint32_t *indices;
@@ -56,15 +67,22 @@ struct StaticMeshData {
     float local_to_world[16];
 };
 
-struct StaticSceneData {
+struct DirectionalLightData {
+    float color[3];
+    float intensity;
+    float direction[3];
+    uint32_t enabled;
+};
+
+struct SceneDeltaData {
     uint32_t abi_version;
     uint32_t struct_size;
-    const StaticMeshData *meshes;
+    uint64_t revision;
+    const SceneMeshDelta *meshes;
     uint32_t mesh_count;
     uint32_t mesh_struct_size;
-    float light_color[3];
-    float light_intensity;
-    float light_direction[3];
+    DirectionalLightData light;
+    uint32_t light_changed;
 };
 
 struct PathTraceEventData {
@@ -117,100 +135,99 @@ namespace {
     return true;
 }
 
-struct StaticMeshSnapshot {
+struct MeshSnapshot {
     luisa::vector<float3> positions;
     luisa::vector<float3> normals;
     luisa::vector<uint3> triangles;
     float4x4 local_to_world;
+    uint64_t geometry_revision{};
 };
 
-struct StaticSceneSnapshot {
-    luisa::vector<StaticMeshSnapshot> meshes;
-    float3 light_color;
-    float light_intensity;
-    float3 light_direction;
+struct DesiredScene {
+    luisa::unordered_map<uint64_t, MeshSnapshot> meshes;
+    Yutrel::ExternalDirectionalLightState light{
+        .color = make_float3(0.0f),
+        .intensity = 0.0f,
+        .direction = make_float3(0.0f, 0.0f, 1.0f),
+        .enabled = 0u,
+    };
+    uint64_t revision{};
 };
 
-[[nodiscard]] luisa::unique_ptr<StaticSceneSnapshot>
-copy_static_scene(const StaticSceneData &data) {
-    if (data.meshes == nullptr || data.mesh_count == 0u ||
-        data.mesh_struct_size != sizeof(StaticMeshData)) {
-        return nullptr;
+[[nodiscard]] bool copy_mesh(
+    const SceneMeshDelta &data,
+    uint64_t revision,
+    MeshSnapshot &mesh) {
+    if (data.positions == nullptr || data.normals == nullptr ||
+        data.indices == nullptr || data.vertex_count == 0u ||
+        data.index_count == 0u || data.index_count % 3u != 0u) {
+        return false;
+    }
+    mesh.positions.reserve(data.vertex_count);
+    mesh.normals.reserve(data.vertex_count);
+    for (auto i = 0u; i < data.vertex_count; i++) {
+        auto position = make_float3(
+            data.positions[i * 3u],
+            data.positions[i * 3u + 1u],
+            data.positions[i * 3u + 2u]);
+        auto normal = make_float3(
+            data.normals[i * 3u],
+            data.normals[i * 3u + 1u],
+            data.normals[i * 3u + 2u]);
+        auto normal_length_squared = dot(normal, normal);
+        if (!finite(position) || !finite(normal) ||
+            !std::isfinite(normal_length_squared) || normal_length_squared < 1e-12f) {
+            return false;
+        }
+        mesh.positions.emplace_back(position);
+        mesh.normals.emplace_back(normalize(normal));
     }
 
-    auto snapshot = luisa::make_unique<StaticSceneSnapshot>();
-    snapshot->meshes.reserve(data.mesh_count);
-    for (auto mesh_index = 0u; mesh_index < data.mesh_count; mesh_index++) {
-        auto &&data_mesh = data.meshes[mesh_index];
-        if (data_mesh.positions == nullptr || data_mesh.normals == nullptr ||
-            data_mesh.indices == nullptr || data_mesh.vertex_count == 0u ||
-            data_mesh.index_count == 0u || data_mesh.index_count % 3u != 0u) {
-            return nullptr;
+    mesh.triangles.reserve(data.index_count / 3u);
+    for (auto i = 0u; i < data.index_count; i += 3u) {
+        auto triangle = make_uint3(
+            data.indices[i],
+            data.indices[i + 1u],
+            data.indices[i + 2u]);
+        if (triangle.x >= data.vertex_count ||
+            triangle.y >= data.vertex_count || triangle.z >= data.vertex_count) {
+            return false;
         }
-
-        StaticMeshSnapshot mesh;
-        mesh.positions.reserve(data_mesh.vertex_count);
-        mesh.normals.reserve(data_mesh.vertex_count);
-        for (auto i = 0u; i < data_mesh.vertex_count; i++) {
-            auto position = make_float3(
-                data_mesh.positions[i * 3u],
-                data_mesh.positions[i * 3u + 1u],
-                data_mesh.positions[i * 3u + 2u]);
-            auto normal = make_float3(
-                data_mesh.normals[i * 3u],
-                data_mesh.normals[i * 3u + 1u],
-                data_mesh.normals[i * 3u + 2u]);
-            auto normal_length_squared = dot(normal, normal);
-            if (!finite(position) || !finite(normal) ||
-                !std::isfinite(normal_length_squared) || normal_length_squared < 1e-12f) {
-                return nullptr;
-            }
-            mesh.positions.emplace_back(position);
-            mesh.normals.emplace_back(normalize(normal));
-        }
-
-        mesh.triangles.reserve(data_mesh.index_count / 3u);
-        for (auto i = 0u; i < data_mesh.index_count; i += 3u) {
-            auto triangle = make_uint3(
-                data_mesh.indices[i],
-                data_mesh.indices[i + 1u],
-                data_mesh.indices[i + 2u]);
-            if (triangle.x >= data_mesh.vertex_count ||
-                triangle.y >= data_mesh.vertex_count || triangle.z >= data_mesh.vertex_count) {
-                return nullptr;
-            }
-            mesh.triangles.emplace_back(triangle);
-        }
-
-        mesh.local_to_world = load_matrix(data_mesh.local_to_world);
-        if (Yutrel::validate_camera_to_world(mesh.local_to_world)) {
-            return nullptr;
-        }
-        snapshot->meshes.emplace_back(std::move(mesh));
+        mesh.triangles.emplace_back(triangle);
     }
 
-    snapshot->light_color = make_float3(
-        data.light_color[0], data.light_color[1], data.light_color[2]);
-    snapshot->light_intensity = data.light_intensity;
-    snapshot->light_direction = make_float3(
-        data.light_direction[0], data.light_direction[1], data.light_direction[2]);
-    auto direction_length_squared = dot(snapshot->light_direction, snapshot->light_direction);
-    if (!finite(snapshot->light_color) ||
-        snapshot->light_color.x < 0.0f || snapshot->light_color.y < 0.0f ||
-        snapshot->light_color.z < 0.0f ||
-        !std::isfinite(snapshot->light_intensity) || snapshot->light_intensity < 0.0f ||
-        !finite(snapshot->light_direction) ||
+    mesh.local_to_world = load_matrix(data.local_to_world);
+    if (Yutrel::validate_camera_to_world(mesh.local_to_world)) {
+        return false;
+    }
+    mesh.geometry_revision = revision;
+    return true;
+}
+
+[[nodiscard]] luisa::optional<Yutrel::ExternalDirectionalLightState>
+copy_light(const DirectionalLightData &data) {
+    auto light = Yutrel::ExternalDirectionalLightState{
+        .color = make_float3(data.color[0], data.color[1], data.color[2]),
+        .intensity = data.intensity,
+        .direction = make_float3(data.direction[0], data.direction[1], data.direction[2]),
+        .enabled = data.enabled,
+    };
+    auto direction_length_squared = dot(light.direction, light.direction);
+    if (!finite(light.color) || light.color.x < 0.0f || light.color.y < 0.0f ||
+        light.color.z < 0.0f || !std::isfinite(light.intensity) ||
+        light.intensity < 0.0f || !finite(light.direction) ||
         !std::isfinite(direction_length_squared) ||
-        std::abs(direction_length_squared - 1.0f) > 1e-4f) {
-        return nullptr;
+        std::abs(direction_length_squared - 1.0f) > 1e-4f || light.enabled > 1u) {
+        return luisa::nullopt;
     }
-    snapshot->light_direction = normalize(snapshot->light_direction);
-    return snapshot;
+    light.direction = normalize(light.direction);
+    return light;
 }
 
 [[nodiscard]] luisa::unique_ptr<Yutrel::Scene> create_scene(
-    StaticSceneSnapshot snapshot,
-    const Yutrel::ExternalCameraState &camera) {
+    const DesiredScene &snapshot,
+    const Yutrel::ExternalCameraState &camera,
+    luisa::vector<uint64_t> &instance_ids) {
     using namespace Yutrel;
 
     SceneSpecBuilder builder;
@@ -218,14 +235,14 @@ copy_static_scene(const StaticSceneData &data) {
     auto albedo = builder.add_anonymous_texture<ConstantTextureSpec>(
         source, make_float4(0.5f, 0.5f, 0.5f, 1.0f));
     auto emission = builder.add_anonymous_texture<ConstantTextureSpec>(
-        source, make_float4(snapshot.light_color, 1.0f));
+        source, make_float4(1.0f));
     auto surface = builder.add_anonymous_surface<DiffuseSurfaceSpec>(source, albedo, true);
     auto spectrum = builder.add_anonymous_spectrum<SRGBSpectrumSpec>(source);
     auto environment = builder.add_anonymous_environment<DistantEnvironmentSpec>(
         source,
         emission,
-        snapshot.light_intensity,
-        snapshot.light_direction);
+        1.0f,
+        make_float3(0.0f, 0.0f, 1.0f));
     auto camera_ref = builder.add_anonymous_camera<PinholeCameraSpec>(
         source,
         camera.camera_to_world,
@@ -241,19 +258,21 @@ copy_static_scene(const StaticSceneData &data) {
     auto filter = builder.add_anonymous_filter<BoxFilterSpec>(source, 0.5f);
     auto sampler = builder.add_anonymous_sampler<IndependentSamplerSpec>(source, 1u, 0u);
     auto integrator = builder.add_anonymous_integrator<PathIntegratorSpec>(source, 4u);
-    for (auto &&mesh : snapshot.meshes) {
+    instance_ids.reserve(snapshot.meshes.size());
+    for (auto &&[mesh_id, mesh] : snapshot.meshes) {
         auto shape = builder.add_anonymous_shape<InlineMeshShapeSpec>(
             source,
-            std::move(mesh.positions),
-            std::move(mesh.normals),
+            mesh.positions,
+            mesh.normals,
             luisa::vector<float2>{},
-            std::move(mesh.triangles));
+            mesh.triangles);
         builder.add_instance(ShapeInstanceSpec{
             .source = source,
             .shape = shape,
             .surface = surface,
             .transform = mesh.local_to_world,
         });
+        instance_ids.emplace_back(mesh_id);
     }
     builder.set_render(RenderSpec{
         .spectrum = spectrum,
@@ -280,11 +299,19 @@ private:
     };
 
     struct SceneRuntime {
+        struct AppliedMesh {
+            uint64_t geometry_revision;
+            float4x4 local_to_world;
+        };
+
         luisa::unique_ptr<Yutrel::Scene> scene;
         luisa::unique_ptr<Yutrel::Renderer> renderer;
+        luisa::vector<luisa::unique_ptr<Yutrel::InlineMesh>> dynamic_shapes;
+        luisa::unordered_map<uint64_t, AppliedMesh> applied_meshes;
         luisa::unordered_map<uint32_t, ViewRuntime> views;
         Yutrel::ExternalCameraState active_camera{};
         bool active_camera_valid{};
+        uint64_t applied_revision{};
 
         [[nodiscard]] ViewRuntime &view(uint32_t view_id) {
             return views[view_id];
@@ -297,6 +324,7 @@ private:
             }
             views.clear();
             renderer = nullptr;
+            dynamic_shapes.clear();
             scene = nullptr;
         }
     };
@@ -315,7 +343,7 @@ private:
     Shader2D<Image<float>> _black_shader;
     Shader2D<Image<float>> _clear_accumulation_shader;
     Shader2D<Image<float>, Image<float>, float, uint> _present_shader;
-    luisa::unique_ptr<StaticSceneSnapshot> _scene_snapshot;
+    DesiredScene _desired_scene;
     luisa::unique_ptr<SceneRuntime> _scene_runtime;
     uint32_t _reported_path_errors{};
 
@@ -371,19 +399,91 @@ public:
             LUISA_WARNING_WITH_LOCATION("Failed to synchronize YutrelUnityPlugin during shutdown.");
         }
         _scene_runtime = nullptr;
-        _scene_snapshot = nullptr;
     }
 
-    [[nodiscard]] int set_static_scene(const StaticSceneData &data) noexcept {
-        if (_scene_snapshot != nullptr || _scene_runtime != nullptr) {
+    [[nodiscard]] int submit_scene_delta(const SceneDeltaData &data) noexcept {
+        if (data.revision <= _desired_scene.revision) {
             return 2;
         }
         try {
-            auto snapshot = copy_static_scene(data);
-            if (snapshot == nullptr) {
+            if ((data.mesh_count != 0u && data.meshes == nullptr) ||
+                data.mesh_struct_size != sizeof(SceneMeshDelta) ||
+                data.light_changed > 1u) {
                 return 1;
             }
-            _scene_snapshot = std::move(snapshot);
+            struct OwnedDelta {
+                uint64_t id;
+                SceneMeshOperation operation;
+                luisa::optional<MeshSnapshot> mesh;
+                float4x4 transform;
+            };
+            luisa::vector<OwnedDelta> deltas;
+            deltas.reserve(data.mesh_count);
+            std::unordered_set<uint64_t> ids;
+            for (auto i = 0u; i < data.mesh_count; i++) {
+                auto &source = data.meshes[i];
+                if (source.mesh_id == 0u || !ids.emplace(source.mesh_id).second ||
+                    source.operation < mesh_add_or_replace || source.operation > mesh_remove) {
+                    return 1;
+                }
+                auto operation = static_cast<SceneMeshOperation>(source.operation);
+                auto existing = _desired_scene.meshes.find(source.mesh_id);
+                OwnedDelta delta{
+                    .id = source.mesh_id,
+                    .operation = operation,
+                    .transform = load_matrix(source.local_to_world),
+                };
+                if (operation == mesh_add_or_replace) {
+                    MeshSnapshot mesh;
+                    if (!copy_mesh(source, data.revision, mesh)) {
+                        return 1;
+                    }
+                    delta.transform = mesh.local_to_world;
+                    delta.mesh = std::move(mesh);
+                } else if (existing == _desired_scene.meshes.end() ||
+                           (operation == mesh_transform &&
+                            Yutrel::validate_camera_to_world(delta.transform))) {
+                    return 1;
+                }
+                deltas.emplace_back(std::move(delta));
+            }
+
+            auto light = luisa::optional<Yutrel::ExternalDirectionalLightState>{};
+            if (data.light_changed != 0u) {
+                light = copy_light(data.light);
+                if (!light) {
+                    return 1;
+                }
+            }
+            auto resulting_mesh_count = _desired_scene.meshes.size();
+            for (auto &delta : deltas) {
+                auto exists = _desired_scene.meshes.find(delta.id) != _desired_scene.meshes.end();
+                if (delta.operation == mesh_add_or_replace && !exists) {
+                    resulting_mesh_count++;
+                } else if (delta.operation == mesh_remove) {
+                    resulting_mesh_count--;
+                }
+            }
+            if (resulting_mesh_count > external_instance_capacity) {
+                return 1;
+            }
+            for (auto &delta : deltas) {
+                switch (delta.operation) {
+                    case mesh_add_or_replace:
+                        _desired_scene.meshes.insert_or_assign(delta.id, std::move(*delta.mesh));
+                        break;
+                    case mesh_transform:
+                        _desired_scene.meshes.at(delta.id).local_to_world = delta.transform;
+                        break;
+                    case mesh_remove:
+                        _desired_scene.meshes.erase(delta.id);
+                        break;
+                }
+            }
+            if (light) {
+                _desired_scene.light = *light;
+            }
+            _desired_scene.revision = data.revision;
             return 0;
         } catch (...) {
             return 3;
@@ -479,24 +579,121 @@ private:
         if (_scene_runtime != nullptr) {
             return true;
         }
-        if (_scene_snapshot == nullptr) {
-            report_path_error_once(path_error_scene, "Unity static Path Tracing scene has not been uploaded.");
+        if (_desired_scene.meshes.empty()) {
             return false;
         }
 
         auto runtime = luisa::make_unique<SceneRuntime>();
-        runtime->scene = create_scene(std::move(*_scene_snapshot), camera);
-        _scene_snapshot = nullptr;
+        luisa::vector<uint64_t> instance_ids;
+        runtime->scene = create_scene(_desired_scene, camera, instance_ids);
         if (runtime->scene == nullptr) {
-            report_path_error_once(path_error_scene, "Failed to create the Unity static Yutrel scene.");
+            report_path_error_once(path_error_scene, "Failed to create the Unity Yutrel scene.");
             return false;
         }
         runtime->renderer = Yutrel::Renderer::create(_device, _stream, *runtime->scene);
-        if (runtime->renderer == nullptr || !runtime->renderer->prepare_external_render()) {
+        if (runtime->renderer == nullptr) {
             report_path_error_once(path_error_scene, "Failed to create the Unity Path Tracing renderer.");
             return false;
         }
+        auto instances = runtime->scene->instances();
+        if (instances.empty()) {
+            return false;
+        }
+        Yutrel::CommandBuffer commands{_stream};
+        if (!runtime->renderer->prepare_external_scene_updates(
+                commands,
+                instance_ids,
+                instances.front().surface) ||
+            !runtime->renderer->update_external_scene(
+                commands,
+                {},
+                _desired_scene.light)) {
+            commands << commit();
+            report_path_error_once(path_error_scene, "Failed to prepare Unity scene hot updates.");
+            return false;
+        }
+        commands << synchronize();
+        if (!runtime->renderer->prepare_external_render()) {
+            report_path_error_once(path_error_scene, "Failed to compile the Unity Path Tracing renderer.");
+            return false;
+        }
+        for (auto &[id, mesh] : _desired_scene.meshes) {
+            runtime->applied_meshes.emplace(id, SceneRuntime::AppliedMesh{
+                .geometry_revision = mesh.geometry_revision,
+                .local_to_world = mesh.local_to_world,
+            });
+        }
+        runtime->applied_revision = _desired_scene.revision;
         _scene_runtime = std::move(runtime);
+        return true;
+    }
+
+    [[nodiscard]] bool apply_scene_updates(
+        SceneRuntime &runtime,
+        Yutrel::CommandBuffer &commands) {
+        if (runtime.applied_revision == _desired_scene.revision) {
+            return true;
+        }
+
+        luisa::vector<Yutrel::ExternalMeshUpdate> updates;
+        luisa::vector<luisa::unique_ptr<Yutrel::InlineMesh>> new_shapes;
+        for (auto &[id, applied] : runtime.applied_meshes) {
+            static_cast<void>(applied);
+            if (_desired_scene.meshes.find(id) == _desired_scene.meshes.end()) {
+                updates.emplace_back(Yutrel::ExternalMeshUpdate{
+                    .id = id,
+                    .operation = Yutrel::ExternalMeshOp::remove,
+                });
+            }
+        }
+        for (auto &[id, mesh] : _desired_scene.meshes) {
+            auto applied = runtime.applied_meshes.find(id);
+            if (applied == runtime.applied_meshes.end() ||
+                applied->second.geometry_revision != mesh.geometry_revision) {
+                auto shape = luisa::make_unique<Yutrel::InlineMesh>(
+                    mesh.positions,
+                    mesh.normals,
+                    luisa::vector<float2>{},
+                    mesh.triangles);
+                updates.emplace_back(Yutrel::ExternalMeshUpdate{
+                    .id = id,
+                    .operation = Yutrel::ExternalMeshOp::add_or_replace,
+                    .shape = shape.get(),
+                    .local_to_world = mesh.local_to_world,
+                });
+                new_shapes.emplace_back(std::move(shape));
+            } else if (!matrix_near(applied->second.local_to_world, mesh.local_to_world)) {
+                updates.emplace_back(Yutrel::ExternalMeshUpdate{
+                    .id = id,
+                    .operation = Yutrel::ExternalMeshOp::transform,
+                    .local_to_world = mesh.local_to_world,
+                });
+            }
+        }
+        if (!runtime.renderer->update_external_scene(
+                commands,
+                updates,
+                _desired_scene.light)) {
+            return false;
+        }
+        for (auto &shape : new_shapes) {
+            runtime.dynamic_shapes.emplace_back(std::move(shape));
+        }
+        runtime.applied_meshes.clear();
+        for (auto &[id, mesh] : _desired_scene.meshes) {
+            runtime.applied_meshes.emplace(id, SceneRuntime::AppliedMesh{
+                .geometry_revision = mesh.geometry_revision,
+                .local_to_world = mesh.local_to_world,
+            });
+        }
+        runtime.applied_revision = _desired_scene.revision;
+        for (auto &[view_id, view] : runtime.views) {
+            static_cast<void>(view_id);
+            if (view.accumulation) {
+                commands << _clear_accumulation_shader(view.accumulation).dispatch(view.accumulation.size());
+            }
+            view.sample_index = 0u;
+        }
         return true;
     }
 
@@ -526,6 +723,13 @@ private:
         }
 
         auto &runtime = *_scene_runtime;
+        Yutrel::CommandBuffer commands{_stream};
+        if (!apply_scene_updates(runtime, commands)) {
+            commands << synchronize();
+            _scene_runtime = nullptr;
+            report_path_error_once(path_error_runtime, "Failed to apply a Unity scene update.");
+            return false;
+        }
         auto &view = runtime.view(data.view_id);
         auto resolution_changed = !view.accumulation ||
                                   view.accumulation.size().x != camera.resolution.x ||
@@ -543,7 +747,6 @@ private:
             view.accumulation = _device.create_image<float>(PixelStorage::FLOAT4, camera.resolution);
         }
 
-        Yutrel::CommandBuffer commands{_stream};
         if (camera_upload_needed && !runtime.renderer->update_external_camera(commands, camera)) {
             commands << commit();
             report_path_error_once(path_error_runtime, "Failed to update the Unity Path Tracing camera.");
@@ -731,14 +934,14 @@ YutrelUnityGetRenderEventFunc() {
 }
 
 extern "C" UNITY_INTERFACE_EXPORT int UNITY_INTERFACE_API
-YutrelUnitySetStaticScene(const yutrel::unity::StaticSceneData *data) {
+YutrelUnitySubmitSceneDelta(const yutrel::unity::SceneDeltaData *data) {
     using namespace yutrel::unity;
     if (data == nullptr || data->abi_version != abi_version ||
-        data->struct_size != sizeof(StaticSceneData)) {
+        data->struct_size != sizeof(SceneDeltaData)) {
         return 1;
     }
     std::scoped_lock lock{plugin_mutex};
-    return plugin == nullptr ? 4 : plugin->set_static_scene(*data);
+    return plugin == nullptr ? 4 : plugin->submit_scene_delta(*data);
 }
 
 extern "C" UNITY_INTERFACE_EXPORT void *UNITY_INTERFACE_API

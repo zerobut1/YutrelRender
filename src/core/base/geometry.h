@@ -4,6 +4,7 @@
 #include <luisa/runtime/rtx/accel.h>
 
 #include "base/interaction.h"
+#include "base/external_scene.h"
 #include "base/light.h"
 #include "base/shape.h"
 #include "utils/command_buffer.h"
@@ -25,6 +26,8 @@ class Shape;
 class Geometry
 {
 public:
+    static constexpr uint external_instance_capacity = 4096u;
+
     struct MeshData
     {
         Mesh* resource;
@@ -36,6 +39,16 @@ public:
     {
         Mesh* resource;
         uint buffer_id_base;
+    };
+
+    struct PreparedInstance
+    {
+        MeshData mesh;
+        uint4 encoded;
+        uint2 medium_interface;
+        uint light_tag;
+        bool has_light;
+        bool opaque;
     };
 
 private:
@@ -52,12 +65,26 @@ private:
     luisa::vector<Light::Handle> m_instanced_lights;
     luisa::vector<uint> m_non_opaque_surface_tags;
     bool m_any_non_opaque{false};
+    bool m_external_updates_enabled{false};
+    uint m_external_high_water{};
+    const Surface* m_external_surface{};
+    luisa::unordered_map<uint64_t, uint> m_external_slots;
+    luisa::vector<uint64_t> m_external_ids;
+    luisa::vector<uint> m_external_free_slots;
+    luisa::vector<uint8_t> m_external_active;
 
 public:
     explicit Geometry(Renderer& renderer) noexcept
         : m_renderer{renderer} {}
 
     void build(CommandBuffer& command_buffer, luisa::span<const ShapeInstance> instances) noexcept;
+    [[nodiscard]] bool prepare_external_updates(
+        CommandBuffer& command_buffer,
+        luisa::span<const uint64_t> initial_instance_ids,
+        const Surface* default_surface) noexcept;
+    [[nodiscard]] bool update_external(
+        CommandBuffer& command_buffer,
+        luisa::span<const ExternalMeshUpdate> updates) noexcept;
 
     [[nodiscard]] auto instances() const noexcept { return luisa::span{m_instances}; }
     [[nodiscard]] auto light_instances() const noexcept { return luisa::span{m_instanced_lights}; }
@@ -74,7 +101,10 @@ public:
     [[nodiscard]] ShadingAttribute shading_point(const Shape::Handle& instance, const Var<Triangle>& triangle, const Var<float2>& bary, const Var<float4x4>& shape_to_world) const noexcept;
 
 private:
-    void process_instance(CommandBuffer& command_buffer, const ShapeInstance& instance) noexcept;
+    [[nodiscard]] MeshData prepare_mesh(CommandBuffer& command_buffer, const Shape* shape) noexcept;
+    [[nodiscard]] PreparedInstance prepare_instance(CommandBuffer& command_buffer, const ShapeInstance& instance) noexcept;
+    void append_instance(const PreparedInstance& instance, float4x4 transform) noexcept;
+    void upload_external_slot(CommandBuffer& command_buffer, uint slot) noexcept;
     [[nodiscard]] Bool alpha_skip(const Var<Ray>& ray, const Var<TriangleHit>& hit) const noexcept;
 };
 } // namespace Yutrel

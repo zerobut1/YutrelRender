@@ -9,7 +9,7 @@ namespace Yutrel.OfflineRenderer
     internal static class NativeBridge
     {
         private const string LibraryName = "YutrelUnityPlugin";
-        private const uint AbiVersion = 4;
+        private const uint AbiVersion = 5;
         private const int ClearEventId = 0;
         private const int PathTraceEventId = 1;
 
@@ -26,9 +26,19 @@ namespace Yutrel.OfflineRenderer
             public IntPtr output;
         }
 
-        [StructLayout(LayoutKind.Sequential)]
-        private unsafe struct StaticMeshData
+        internal enum SceneMeshOperation : uint
         {
+            AddOrReplace = 1,
+            Transform = 2,
+            Remove = 3
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private unsafe struct SceneMeshDelta
+        {
+            public ulong meshId;
+            public SceneMeshOperation operation;
+            public uint reserved;
             public IntPtr positions;
             public IntPtr normals;
             public IntPtr indices;
@@ -38,35 +48,108 @@ namespace Yutrel.OfflineRenderer
         }
 
         [StructLayout(LayoutKind.Sequential)]
-        private unsafe struct StaticSceneData
+        private unsafe struct DirectionalLightData
+        {
+            public fixed float color[3];
+            public float intensity;
+            public fixed float direction[3];
+            public uint enabled;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private unsafe struct SceneDeltaData
         {
             public uint abiVersion;
             public uint structSize;
+            public ulong revision;
             public IntPtr meshes;
             public uint meshCount;
             public uint meshStructSize;
-            public fixed float lightColor[3];
-            public float lightIntensity;
-            public fixed float lightDirection[3];
+            public DirectionalLightData light;
+            public uint lightChanged;
         }
 
-        internal readonly struct StaticMeshUpload
+        internal readonly struct SceneMeshUpdate
         {
+            internal readonly ulong id;
+            internal readonly SceneMeshOperation operation;
             internal readonly Vector3[] positions;
             internal readonly Vector3[] normals;
             internal readonly uint[] indices;
             internal readonly Matrix4x4 localToWorld;
 
-            internal StaticMeshUpload(
+            private SceneMeshUpdate(
+                ulong id,
+                SceneMeshOperation operation,
                 Vector3[] positions,
                 Vector3[] normals,
                 uint[] indices,
                 Matrix4x4 localToWorld)
             {
+                this.id = id;
+                this.operation = operation;
                 this.positions = positions;
                 this.normals = normals;
                 this.indices = indices;
                 this.localToWorld = localToWorld;
+            }
+
+            internal static SceneMeshUpdate AddOrReplace(
+                ulong id,
+                Vector3[] positions,
+                Vector3[] normals,
+                uint[] indices,
+                Matrix4x4 localToWorld)
+            {
+                return new SceneMeshUpdate(
+                    id,
+                    SceneMeshOperation.AddOrReplace,
+                    positions,
+                    normals,
+                    indices,
+                    localToWorld);
+            }
+
+            internal static SceneMeshUpdate Transform(ulong id, Matrix4x4 localToWorld)
+            {
+                return new SceneMeshUpdate(
+                    id,
+                    SceneMeshOperation.Transform,
+                    null,
+                    null,
+                    null,
+                    localToWorld);
+            }
+
+            internal static SceneMeshUpdate Remove(ulong id)
+            {
+                return new SceneMeshUpdate(
+                    id,
+                    SceneMeshOperation.Remove,
+                    null,
+                    null,
+                    null,
+                    Matrix4x4.identity);
+            }
+        }
+
+        internal readonly struct DirectionalLightUpdate
+        {
+            internal readonly Color color;
+            internal readonly float intensity;
+            internal readonly Vector3 direction;
+            internal readonly bool enabled;
+
+            internal DirectionalLightUpdate(
+                Color color,
+                float intensity,
+                Vector3 direction,
+                bool enabled)
+            {
+                this.color = color;
+                this.intensity = intensity;
+                this.direction = direction;
+                this.enabled = enabled;
             }
         }
 
@@ -100,7 +183,7 @@ namespace Yutrel.OfflineRenderer
         private static extern IntPtr YutrelUnityGetRenderEventFunc();
 
         [DllImport(LibraryName, CallingConvention = CallingConvention.Winapi)]
-        private static extern int YutrelUnitySetStaticScene(ref StaticSceneData data);
+        private static extern int YutrelUnitySubmitSceneDelta(ref SceneDeltaData data);
 
         [DllImport(LibraryName, CallingConvention = CallingConvention.Winapi)]
         private static extern IntPtr YutrelUnityCreateClearEvent(ref ClearEventData data);
@@ -176,20 +259,19 @@ namespace Yutrel.OfflineRenderer
             }
         }
 
-        internal static unsafe bool SetStaticScene(
-            IReadOnlyList<StaticMeshUpload> meshes,
-            Color lightColor,
-            float lightIntensity,
-            Vector3 lightDirection)
+        internal static unsafe bool SubmitSceneDelta(
+            IReadOnlyList<SceneMeshUpdate> meshes,
+            ulong revision,
+            DirectionalLightUpdate? lightUpdate)
         {
 #if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
-            if (renderEvent == IntPtr.Zero || meshes == null || meshes.Count == 0)
+            if (renderEvent == IntPtr.Zero || meshes == null || revision == 0)
             {
-                ReportErrorOnce("Yutrel static scene upload has invalid data.");
+                ReportErrorOnce("Yutrel scene delta has invalid data.");
                 return false;
             }
 
-            var descriptors = new StaticMeshData[meshes.Count];
+            var descriptors = new SceneMeshDelta[meshes.Count];
             var pinnedArrays = new GCHandle[meshes.Count * 3];
             var pinnedCount = 0;
             try
@@ -197,29 +279,34 @@ namespace Yutrel.OfflineRenderer
                 for (var meshIndex = 0; meshIndex < meshes.Count; meshIndex++)
                 {
                     var mesh = meshes[meshIndex];
-                    if (mesh.positions == null || mesh.normals == null || mesh.indices == null ||
-                        mesh.positions.Length == 0 || mesh.normals.Length != mesh.positions.Length ||
-                        mesh.indices.Length == 0)
+                    if (mesh.id == 0)
                     {
-                        ReportErrorOnce("Yutrel static scene upload contains an invalid Mesh.");
+                        ReportErrorOnce("Yutrel scene delta contains an invalid Mesh ID.");
                         return false;
                     }
-
-                    pinnedArrays[pinnedCount] = GCHandle.Alloc(mesh.positions, GCHandleType.Pinned);
-                    var positions = pinnedArrays[pinnedCount++].AddrOfPinnedObject();
-                    pinnedArrays[pinnedCount] = GCHandle.Alloc(mesh.normals, GCHandleType.Pinned);
-                    var normals = pinnedArrays[pinnedCount++].AddrOfPinnedObject();
-                    pinnedArrays[pinnedCount] = GCHandle.Alloc(mesh.indices, GCHandleType.Pinned);
-                    var indices = pinnedArrays[pinnedCount++].AddrOfPinnedObject();
-
-                    var descriptor = new StaticMeshData
+                    var descriptor = new SceneMeshDelta
                     {
-                        positions = positions,
-                        normals = normals,
-                        indices = indices,
-                        vertexCount = (uint)mesh.positions.Length,
-                        indexCount = (uint)mesh.indices.Length
+                        meshId = mesh.id,
+                        operation = mesh.operation
                     };
+                    if (mesh.operation == SceneMeshOperation.AddOrReplace)
+                    {
+                        if (mesh.positions == null || mesh.normals == null || mesh.indices == null ||
+                            mesh.positions.Length == 0 || mesh.normals.Length != mesh.positions.Length ||
+                            mesh.indices.Length == 0)
+                        {
+                            ReportErrorOnce("Yutrel scene delta contains invalid Mesh geometry.");
+                            return false;
+                        }
+                        pinnedArrays[pinnedCount] = GCHandle.Alloc(mesh.positions, GCHandleType.Pinned);
+                        descriptor.positions = pinnedArrays[pinnedCount++].AddrOfPinnedObject();
+                        pinnedArrays[pinnedCount] = GCHandle.Alloc(mesh.normals, GCHandleType.Pinned);
+                        descriptor.normals = pinnedArrays[pinnedCount++].AddrOfPinnedObject();
+                        pinnedArrays[pinnedCount] = GCHandle.Alloc(mesh.indices, GCHandleType.Pinned);
+                        descriptor.indices = pinnedArrays[pinnedCount++].AddrOfPinnedObject();
+                        descriptor.vertexCount = (uint)mesh.positions.Length;
+                        descriptor.indexCount = (uint)mesh.indices.Length;
+                    }
                     var localToWorld = ToColumnMajor(mesh.localToWorld);
                     for (var i = 0; i < localToWorld.Length; i++)
                     {
@@ -228,28 +315,35 @@ namespace Yutrel.OfflineRenderer
                     descriptors[meshIndex] = descriptor;
                 }
 
-                fixed (StaticMeshData* meshPointer = descriptors)
+                fixed (SceneMeshDelta* meshPointer = descriptors)
                 {
-                    var data = new StaticSceneData
+                    var data = new SceneDeltaData
                     {
                         abiVersion = AbiVersion,
-                        structSize = (uint)sizeof(StaticSceneData),
+                        structSize = (uint)sizeof(SceneDeltaData),
+                        revision = revision,
                         meshes = (IntPtr)meshPointer,
                         meshCount = (uint)descriptors.Length,
-                        meshStructSize = (uint)sizeof(StaticMeshData),
-                        lightIntensity = lightIntensity
+                        meshStructSize = (uint)sizeof(SceneMeshDelta),
+                        lightChanged = lightUpdate.HasValue ? 1u : 0u
                     };
-                    data.lightColor[0] = lightColor.r;
-                    data.lightColor[1] = lightColor.g;
-                    data.lightColor[2] = lightColor.b;
-                    data.lightDirection[0] = lightDirection.x;
-                    data.lightDirection[1] = lightDirection.y;
-                    data.lightDirection[2] = lightDirection.z;
+                    if (lightUpdate.HasValue)
+                    {
+                        var light = lightUpdate.Value;
+                        data.light.color[0] = light.color.r;
+                        data.light.color[1] = light.color.g;
+                        data.light.color[2] = light.color.b;
+                        data.light.intensity = light.intensity;
+                        data.light.direction[0] = light.direction.x;
+                        data.light.direction[1] = light.direction.y;
+                        data.light.direction[2] = light.direction.z;
+                        data.light.enabled = light.enabled ? 1u : 0u;
+                    }
 
-                    var result = YutrelUnitySetStaticScene(ref data);
+                    var result = YutrelUnitySubmitSceneDelta(ref data);
                     if (result != 0)
                     {
-                        ReportErrorOnce($"Yutrel static scene upload failed with code {result}.");
+                        ReportErrorOnce($"Yutrel scene delta submission failed with code {result}.");
                         return false;
                     }
                 }
