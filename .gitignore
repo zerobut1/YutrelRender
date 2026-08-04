@@ -28,7 +28,7 @@ __pycache__
 .venv/
 projects/Yutrel/scene
 projects/Yutrel/scenes
-scene
+/scene
 *.exr
 .kimix_cache
 /unity_package/com.yutrel.path-tracer/Runtime/Plugins/x86_64/*.dll
