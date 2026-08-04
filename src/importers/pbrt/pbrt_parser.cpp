@@ -1100,6 +1100,22 @@ private:
         auto [albedo, albedo_texture]       = parse_rgb_texture("albedo", make_float3(0.0f));
         auto [g, g_texture]                 = parse_float_texture("g", 0.0f);
         auto [eta, eta_texture]             = parse_float_texture("eta", 1.5f);
+        auto [base_weight, base_weight_texture] = parse_float_texture("base_weight", 1.0f);
+        auto [base_color, base_color_texture] = parse_rgb_texture("base_color", make_float3(0.8f));
+        auto [base_metalness, base_metalness_texture] = parse_float_texture("base_metalness", 0.0f);
+        auto [base_diffuse_roughness, base_diffuse_roughness_texture] =
+            parse_float_texture("base_diffuse_roughness", 0.0f);
+        auto [specular_weight, specular_weight_texture] = parse_float_texture("specular_weight", 1.0f);
+        auto [specular_color, specular_color_texture] = parse_rgb_texture("specular_color", make_float3(1.0f));
+        auto [specular_roughness, specular_roughness_texture] = parse_float_texture("specular_roughness", 0.3f);
+        auto [specular_roughness_anisotropy, specular_roughness_anisotropy_texture] =
+            parse_float_texture("specular_roughness_anisotropy", 0.0f);
+        auto [specular_ior, specular_ior_texture] = parse_float_texture("specular_ior", 1.5f);
+        if (material_type == MaterialDesc::Type::OpenPBR &&
+            !specular_ior_texture && specular_ior <= 0.0f)
+        {
+            fail(command, "OpenPBR 'specular_ior' must be greater than zero");
+        }
         luisa::optional<luisa::string> eta_spectrum;
         if (auto p = find_param(params, "spectrum", "eta"))
         {
@@ -1133,6 +1149,24 @@ private:
             .eta                 = eta,
             .eta_texture         = std::move(eta_texture),
             .eta_spectrum        = std::move(eta_spectrum),
+            .base_weight = base_weight,
+            .base_weight_texture = std::move(base_weight_texture),
+            .base_color = base_color,
+            .base_color_texture = std::move(base_color_texture),
+            .base_metalness = base_metalness,
+            .base_metalness_texture = std::move(base_metalness_texture),
+            .base_diffuse_roughness = base_diffuse_roughness,
+            .base_diffuse_roughness_texture = std::move(base_diffuse_roughness_texture),
+            .specular_weight = specular_weight,
+            .specular_weight_texture = std::move(specular_weight_texture),
+            .specular_color = specular_color,
+            .specular_color_texture = std::move(specular_color_texture),
+            .specular_roughness = specular_roughness,
+            .specular_roughness_texture = std::move(specular_roughness_texture),
+            .specular_roughness_anisotropy = specular_roughness_anisotropy,
+            .specular_roughness_anisotropy_texture = std::move(specular_roughness_anisotropy_texture),
+            .specular_ior = specular_ior,
+            .specular_ior_texture = std::move(specular_ior_texture),
             .remap_roughness     = one_bool(params, "remaproughness", command, true),
             .max_depth           = one_uint(params, "maxdepth", command, 10u),
             .samples             = one_uint(params, "nsamples", command, 1u),
@@ -1162,6 +1196,10 @@ private:
         else if (type == "dielectric")
         {
             material_type = MaterialDesc::Type::Dielectric;
+        }
+        else if (type == "openpbr")
+        {
+            material_type = MaterialDesc::Type::OpenPBR;
         }
         else if (type == "interface")
         {
@@ -1193,6 +1231,10 @@ private:
         else if (type == "dielectric")
         {
             material_type = MaterialDesc::Type::Dielectric;
+        }
+        else if (type == "openpbr")
+        {
+            material_type = MaterialDesc::Type::OpenPBR;
         }
         else if (type == "interface")
         {

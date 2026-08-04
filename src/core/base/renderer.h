@@ -207,6 +207,8 @@ public:
     [[nodiscard]] auto buffer(I&& id) const noexcept { return m_bindless_array->buffer<T>(std::forward<I>(id)); }
     template <typename T>
     [[nodiscard]] auto tex2d(T&& id) const noexcept { return m_bindless_array->tex2d(std::forward<T>(id)); }
+    template <typename T>
+    [[nodiscard]] auto tex3d(T&& id) const noexcept { return m_bindless_array->tex3d(std::forward<T>(id)); }
 };
 
 } // namespace Yutrel

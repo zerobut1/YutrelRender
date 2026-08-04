@@ -22,6 +22,7 @@
 #include "surfaces/dielectric.h"
 #include "surfaces/diffuse.h"
 #include "surfaces/null.h"
+#include "surfaces/openpbr.h"
 #include "surfaces/opacity.h"
 #include "textures/checker_board.h"
 #include "textures/constant.h"
@@ -874,6 +875,31 @@ static auto test_pbrt_import_registration = []
         });
         expect(f11_count == 2u);
         expect(scalar_count == 1u);
+    };
+
+    "import_openpbr_materials"_test = []
+    {
+        auto parsed = PbrtParser::parse("test/scenes/openpbr_materials.pbrt");
+        auto spec = PbrtImporter::import(std::move(parsed));
+        auto openpbr_count = 0u;
+        spec.surfaces().visit_entries([&](SurfaceRef, const SpecMeta&, const SurfaceSpec* surface)
+        {
+            if (auto openpbr = dynamic_cast<const OpenPBRSurfaceSpec*>(surface))
+            {
+                auto&& params = openpbr->params();
+                expect(params.base_weight.has_value());
+                expect(params.base_color.has_value());
+                expect(params.base_metalness.has_value());
+                expect(params.base_diffuse_roughness.has_value());
+                expect(params.specular_weight.has_value());
+                expect(params.specular_color.has_value());
+                expect(params.specular_roughness.has_value());
+                expect(params.specular_roughness_anisotropy.has_value());
+                expect(params.specular_ior.has_value());
+                openpbr_count++;
+            }
+        });
+        expect(openpbr_count == 2u);
     };
 
     "reject_unknown_dielectric_eta_spectrum"_test = []

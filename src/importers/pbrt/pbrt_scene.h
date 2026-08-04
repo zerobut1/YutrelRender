@@ -167,6 +167,7 @@ struct MaterialDesc
         Diffuse,
         CoatedDiffuse,
         Dielectric,
+        OpenPBR,
         Interface,
     };
     Type type{Type::Diffuse};
@@ -187,6 +188,24 @@ struct MaterialDesc
     float eta{1.5f};
     luisa::optional<luisa::string> eta_texture;
     luisa::optional<luisa::string> eta_spectrum;
+    float base_weight{1.0f};
+    luisa::optional<luisa::string> base_weight_texture;
+    float3 base_color{0.8f, 0.8f, 0.8f};
+    luisa::optional<luisa::string> base_color_texture;
+    float base_metalness{0.0f};
+    luisa::optional<luisa::string> base_metalness_texture;
+    float base_diffuse_roughness{0.0f};
+    luisa::optional<luisa::string> base_diffuse_roughness_texture;
+    float specular_weight{1.0f};
+    luisa::optional<luisa::string> specular_weight_texture;
+    float3 specular_color{1.0f, 1.0f, 1.0f};
+    luisa::optional<luisa::string> specular_color_texture;
+    float specular_roughness{0.3f};
+    luisa::optional<luisa::string> specular_roughness_texture;
+    float specular_roughness_anisotropy{0.0f};
+    luisa::optional<luisa::string> specular_roughness_anisotropy_texture;
+    float specular_ior{1.5f};
+    luisa::optional<luisa::string> specular_ior_texture;
     bool remap_roughness{true};
     uint max_depth{10u};
     uint samples{1u};

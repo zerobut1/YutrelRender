@@ -14,6 +14,16 @@ add_requires("usd", {
     },
 })
 
+option("openpbr_reference_dir")
+    set_default("")
+    set_showmenu(true)
+option_end()
+
+option("openpbr_glm_dir")
+    set_default("")
+    set_showmenu(true)
+option_end()
+
 if is_host("windows") then
     lc_options = {
         lc_cuda_backend = true,
@@ -60,6 +70,7 @@ end
 
 includes("ext/LuisaCompute")
 includes("src")
+includes("tools")
 includes("unity_plugin")
 includes("test")
 

@@ -1,0 +1,3 @@
+WorldBegin
+Material "openpbr" "float specular_ior" [0]
+Shape "sphere"

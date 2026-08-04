@@ -44,6 +44,7 @@
 #include "surfaces/dielectric.h"
 #include "surfaces/diffuse.h"
 #include "surfaces/null.h"
+#include "surfaces/openpbr.h"
 #include "surfaces/opacity.h"
 #include "textures/checker_board.h"
 #include "textures/constant.h"
@@ -288,6 +289,47 @@ void validate_material(const MaterialDesc& material, luisa::string_view owner, b
         ParameterKey{"bool", "remaproughness"},
     };
     static constexpr std::array interface_named_allowed{ParameterKey{"string", "type"}};
+    static constexpr std::array openpbr_inline_allowed{
+        ParameterKey{"float", "base_weight"},
+        ParameterKey{"texture", "base_weight"},
+        ParameterKey{"rgb", "base_color"},
+        ParameterKey{"texture", "base_color"},
+        ParameterKey{"float", "base_metalness"},
+        ParameterKey{"texture", "base_metalness"},
+        ParameterKey{"float", "base_diffuse_roughness"},
+        ParameterKey{"texture", "base_diffuse_roughness"},
+        ParameterKey{"float", "specular_weight"},
+        ParameterKey{"texture", "specular_weight"},
+        ParameterKey{"rgb", "specular_color"},
+        ParameterKey{"texture", "specular_color"},
+        ParameterKey{"float", "specular_roughness"},
+        ParameterKey{"texture", "specular_roughness"},
+        ParameterKey{"float", "specular_roughness_anisotropy"},
+        ParameterKey{"texture", "specular_roughness_anisotropy"},
+        ParameterKey{"float", "specular_ior"},
+        ParameterKey{"texture", "specular_ior"},
+    };
+    static constexpr std::array openpbr_named_allowed{
+        ParameterKey{"string", "type"},
+        ParameterKey{"float", "base_weight"},
+        ParameterKey{"texture", "base_weight"},
+        ParameterKey{"rgb", "base_color"},
+        ParameterKey{"texture", "base_color"},
+        ParameterKey{"float", "base_metalness"},
+        ParameterKey{"texture", "base_metalness"},
+        ParameterKey{"float", "base_diffuse_roughness"},
+        ParameterKey{"texture", "base_diffuse_roughness"},
+        ParameterKey{"float", "specular_weight"},
+        ParameterKey{"texture", "specular_weight"},
+        ParameterKey{"rgb", "specular_color"},
+        ParameterKey{"texture", "specular_color"},
+        ParameterKey{"float", "specular_roughness"},
+        ParameterKey{"texture", "specular_roughness"},
+        ParameterKey{"float", "specular_roughness_anisotropy"},
+        ParameterKey{"texture", "specular_roughness_anisotropy"},
+        ParameterKey{"float", "specular_ior"},
+        ParameterKey{"texture", "specular_ior"},
+    };
     if (material.type == MaterialDesc::Type::Diffuse)
     {
         validate_parameters(material.parameters, owner, named ? luisa::span<const ParameterKey>{diffuse_named_allowed} : luisa::span<const ParameterKey>{diffuse_inline_allowed});
@@ -301,6 +343,13 @@ void validate_material(const MaterialDesc& material, luisa::string_view owner, b
     if (material.type == MaterialDesc::Type::Dielectric)
     {
         validate_parameters(material.parameters, owner, named ? luisa::span<const ParameterKey>{dielectric_named_allowed} : luisa::span<const ParameterKey>{dielectric_inline_allowed});
+        return;
+    }
+    if (material.type == MaterialDesc::Type::OpenPBR)
+    {
+        validate_parameters(material.parameters, owner,
+                            named ? luisa::span<const ParameterKey>{openpbr_named_allowed}
+                                  : luisa::span<const ParameterKey>{openpbr_inline_allowed});
         return;
     }
     if (named)
@@ -1149,6 +1198,29 @@ SceneSpec PbrtImporter::import(PbrtScene scene)
                 return builder.add_anonymous_surface<DielectricSurfaceSpec>(material.source, std::move(params));
             }
             return builder.add_surface<DielectricSurfaceSpec>(
+                SpecMeta{.name = luisa::string{name}, .source = material.source},
+                std::move(params));
+        }
+
+        if (material.type == MaterialDesc::Type::OpenPBR)
+        {
+            OpenPBRSurfaceParams params{
+                .base_weight = resolve_texture("base_weight", make_float4(material.base_weight), material.base_weight_texture),
+                .base_color = resolve_texture("base_color", make_float4(material.base_color, 1.0f), material.base_color_texture),
+                .base_metalness = resolve_texture("base_metalness", make_float4(material.base_metalness), material.base_metalness_texture),
+                .base_diffuse_roughness = resolve_texture("base_diffuse_roughness", make_float4(material.base_diffuse_roughness), material.base_diffuse_roughness_texture),
+                .specular_weight = resolve_texture("specular_weight", make_float4(material.specular_weight), material.specular_weight_texture),
+                .specular_color = resolve_texture("specular_color", make_float4(material.specular_color, 1.0f), material.specular_color_texture),
+                .specular_roughness = resolve_texture("specular_roughness", make_float4(material.specular_roughness), material.specular_roughness_texture),
+                .specular_roughness_anisotropy = resolve_texture("specular_roughness_anisotropy", make_float4(material.specular_roughness_anisotropy), material.specular_roughness_anisotropy_texture),
+                .specular_ior = resolve_texture("specular_ior", make_float4(material.specular_ior), material.specular_ior_texture),
+                .two_sided = true,
+            };
+            if (name.empty())
+            {
+                return builder.add_anonymous_surface<OpenPBRSurfaceSpec>(material.source, std::move(params));
+            }
+            return builder.add_surface<OpenPBRSurfaceSpec>(
                 SpecMeta{.name = luisa::string{name}, .source = material.source},
                 std::move(params));
         }

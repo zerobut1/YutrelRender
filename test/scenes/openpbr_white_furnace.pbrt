@@ -1,0 +1,82 @@
+LookAt 0 0 10  0 0 0  0 1 0
+
+Integrator "path"
+    "integer maxdepth" [4]
+Sampler "independent"
+    "integer pixelsamples" [512]
+    "integer seed" [20260804]
+PixelFilter "triangle"
+    "float xradius" [1]
+    "float yradius" [1]
+Film "rgb"
+    "string filename" ["openpbr_white_furnace.exr"]
+    "integer xresolution" [192]
+    "integer yresolution" [64]
+Camera "perspective"
+    "float fov" [30]
+
+WorldBegin
+
+LightSource "infinite"
+    "rgb L" [1 1 1]
+
+MakeNamedMaterial "dielectric-smooth"
+    "string type" ["openpbr"]
+    "rgb base_color" [1 1 1]
+    "float specular_roughness" [0.05]
+
+MakeNamedMaterial "dielectric-rough"
+    "string type" ["openpbr"]
+    "rgb base_color" [1 1 1]
+    "float base_diffuse_roughness" [1]
+    "float specular_roughness" [1]
+
+MakeNamedMaterial "mixed"
+    "string type" ["openpbr"]
+    "rgb base_color" [1 1 1]
+    "float base_metalness" [0.5]
+    "float specular_roughness" [0.2]
+    "float specular_roughness_anisotropy" [0.5]
+
+MakeNamedMaterial "metal-rough"
+    "string type" ["openpbr"]
+    "rgb base_color" [1 1 1]
+    "float base_metalness" [1]
+    "float specular_roughness" [0.5]
+
+MakeNamedMaterial "metal-anisotropic"
+    "string type" ["openpbr"]
+    "rgb base_color" [1 1 1]
+    "float base_metalness" [1]
+    "float specular_roughness" [0.2]
+    "float specular_roughness_anisotropy" [0.9]
+    "float specular_ior" [2.5]
+
+AttributeBegin
+    Translate -3 0 0
+    NamedMaterial "dielectric-smooth"
+    Shape "sphere" "float radius" [0.65]
+AttributeEnd
+
+AttributeBegin
+    Translate -1.5 0 0
+    NamedMaterial "dielectric-rough"
+    Shape "sphere" "float radius" [0.65]
+AttributeEnd
+
+AttributeBegin
+    NamedMaterial "mixed"
+    Shape "sphere" "float radius" [0.65]
+AttributeEnd
+
+AttributeBegin
+    Translate 1.5 0 0
+    NamedMaterial "metal-rough"
+    Shape "sphere" "float radius" [0.65]
+AttributeEnd
+
+AttributeBegin
+    Translate 3 0 0
+    NamedMaterial "metal-anisotropic"
+    Shape "sphere" "float radius" [0.65]
+AttributeEnd

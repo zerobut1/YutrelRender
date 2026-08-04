@@ -408,6 +408,39 @@ static auto test_pbrt_parse_registration = []
         expect(named_material.remap_roughness);
     };
 
+    "parse_openpbr_materials"_test = []
+    {
+        auto scene = PbrtParser::parse("test/scenes/openpbr_materials.pbrt");
+        expect(scene.materials.size() == 1u);
+        expect(scene.named_materials.size() == 1u);
+
+        auto&& inline_material = scene.materials.front();
+        expect(inline_material.type == MaterialDesc::Type::OpenPBR);
+        expect(is_near(inline_material.base_weight, 0.7f));
+        expect(is_near(inline_material.base_color.y, 0.3f));
+        expect(is_near(inline_material.base_metalness, 0.5f));
+        expect(is_near(inline_material.base_diffuse_roughness, 0.2f));
+        expect(is_near(inline_material.specular_weight, 1.2f));
+        expect(is_near(inline_material.specular_color.z, 1.0f));
+        expect(is_near(inline_material.specular_roughness, 0.4f));
+        expect(is_near(inline_material.specular_roughness_anisotropy, 0.9f));
+        expect(is_near(inline_material.specular_ior, 2.5f));
+
+        auto&& named = scene.named_materials.at("openpbr-named");
+        expect(named.type == MaterialDesc::Type::OpenPBR);
+        expect(named.base_metalness_texture ==
+               luisa::optional<luisa::string>{"openpbr-metalness"});
+        expect(is_near(named.base_weight, 0.9f));
+        expect(is_near(named.specular_ior, 1.8f));
+    };
+
+    "reject_invalid_openpbr_ior"_test = []
+    {
+        expect(parse_error_contains(
+            "test/scenes/openpbr_invalid_ior.pbrt",
+            {"openpbr_invalid_ior.pbrt", "specular_ior", "greater than zero"}));
+    };
+
     "parse_dielectric_f11"_test = []
     {
         auto scene = PbrtParser::parse("test/scenes/dielectric_f11.pbrt");

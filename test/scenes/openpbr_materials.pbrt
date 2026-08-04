@@ -1,0 +1,41 @@
+Integrator "path"
+Sampler "independent" "integer pixelsamples" [1]
+Film "rgb" "integer xresolution" [8] "integer yresolution" [8]
+Camera "perspective"
+
+WorldBegin
+
+Texture "openpbr-metalness" "float" "constant"
+    "float value" [0.35]
+
+MakeNamedMaterial "openpbr-named"
+    "string type" ["openpbr"]
+    "float base_weight" [0.9]
+    "rgb base_color" [0.2 0.4 0.8]
+    "texture base_metalness" ["openpbr-metalness"]
+    "float base_diffuse_roughness" [0.6]
+    "float specular_weight" [0.75]
+    "rgb specular_color" [0.9 0.8 0.7]
+    "float specular_roughness" [0.25]
+    "float specular_roughness_anisotropy" [0.5]
+    "float specular_ior" [1.8]
+
+AttributeBegin
+    NamedMaterial "openpbr-named"
+    Shape "sphere"
+AttributeEnd
+
+AttributeBegin
+    Translate 3 0 0
+    Material "openpbr"
+        "float base_weight" [0.7]
+        "rgb base_color" [0.8 0.3 0.1]
+        "float base_metalness" [0.5]
+        "float base_diffuse_roughness" [0.2]
+        "float specular_weight" [1.2]
+        "rgb specular_color" [0.6 0.7 1.0]
+        "float specular_roughness" [0.4]
+        "float specular_roughness_anisotropy" [0.9]
+        "float specular_ior" [2.5]
+    Shape "sphere"
+AttributeEnd
