@@ -9,7 +9,7 @@ namespace Yutrel.PathTracer
     internal static class NativeBridge
     {
         private const string LibraryName = "YutrelUnityPlugin";
-        private const uint AbiVersion = 6;
+        private const uint AbiVersion = 7;
         private const int ClearEventId = 0;
         private const int PathTraceEventId = 1;
 
@@ -39,6 +39,26 @@ namespace Yutrel.PathTracer
             Srgb = 1
         }
 
+        internal enum SceneMaterialType : uint
+        {
+            FallbackDiffuse = 0,
+            OpenPBR = 1
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private unsafe struct OpenPBRMaterialAbi
+        {
+            public float baseWeight;
+            public fixed float baseColor[3];
+            public float baseMetalness;
+            public float baseDiffuseRoughness;
+            public float specularWeight;
+            public fixed float specularColor[3];
+            public float specularRoughness;
+            public float specularRoughnessAnisotropy;
+            public float specularIor;
+        }
+
         [StructLayout(LayoutKind.Sequential)]
         private unsafe struct SceneSubMeshData
         {
@@ -53,6 +73,9 @@ namespace Yutrel.PathTracer
             public uint textureHeight;
             public fixed float uvScale[2];
             public fixed float uvOffset[2];
+            public ulong materialId;
+            public SceneMaterialType materialType;
+            public OpenPBRMaterialAbi openPbr;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -186,6 +209,9 @@ namespace Yutrel.PathTracer
             internal readonly uint textureHeight;
             internal readonly Vector2 uvScale;
             internal readonly Vector2 uvOffset;
+            internal readonly ulong materialId;
+            internal readonly SceneMaterialType materialType;
+            internal readonly OpenPBRMaterialData openPbr;
 
             internal SceneSubMeshUpdate(
                 uint indexOffset,
@@ -198,7 +224,10 @@ namespace Yutrel.PathTracer
                 uint textureWidth,
                 uint textureHeight,
                 Vector2 uvScale,
-                Vector2 uvOffset)
+                Vector2 uvOffset,
+                ulong materialId,
+                SceneMaterialType materialType,
+                OpenPBRMaterialData openPbr)
             {
                 this.indexOffset = indexOffset;
                 this.indexCount = indexCount;
@@ -211,6 +240,9 @@ namespace Yutrel.PathTracer
                 this.textureHeight = textureHeight;
                 this.uvScale = uvScale;
                 this.uvOffset = uvOffset;
+                this.materialId = materialId;
+                this.materialType = materialType;
+                this.openPbr = openPbr;
             }
         }
 
@@ -346,6 +378,11 @@ namespace Yutrel.PathTracer
             DirectionalLightUpdate? lightUpdate)
         {
 #if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+            if (sizeof(OpenPBRMaterialAbi) != 52 || sizeof(SceneSubMeshData) != 128)
+            {
+                ReportErrorOnce("Yutrel OpenPBR material ABI layout is invalid.");
+                return false;
+            }
             if (renderEvent == IntPtr.Zero || meshes == null || revision == 0)
             {
                 ReportErrorOnce("Yutrel scene delta has invalid data.");
@@ -408,7 +445,9 @@ namespace Yutrel.PathTracer
                                 doubleSided = subMesh.doubleSided ? 1u : 0u,
                                 textureEncoding = subMesh.textureEncoding,
                                 textureWidth = subMesh.textureWidth,
-                                textureHeight = subMesh.textureHeight
+                                textureHeight = subMesh.textureHeight,
+                                materialId = subMesh.materialId,
+                                materialType = subMesh.materialType
                             };
                             subMeshDescriptor.emissiveColor[0] = subMesh.emissiveColorLinearSrgb.x;
                             subMeshDescriptor.emissiveColor[1] = subMesh.emissiveColorLinearSrgb.y;
@@ -417,6 +456,22 @@ namespace Yutrel.PathTracer
                             subMeshDescriptor.uvScale[1] = subMesh.uvScale.y;
                             subMeshDescriptor.uvOffset[0] = subMesh.uvOffset.x;
                             subMeshDescriptor.uvOffset[1] = subMesh.uvOffset.y;
+                            subMeshDescriptor.openPbr.baseWeight = subMesh.openPbr.baseWeight;
+                            subMeshDescriptor.openPbr.baseColor[0] = subMesh.openPbr.baseColor.x;
+                            subMeshDescriptor.openPbr.baseColor[1] = subMesh.openPbr.baseColor.y;
+                            subMeshDescriptor.openPbr.baseColor[2] = subMesh.openPbr.baseColor.z;
+                            subMeshDescriptor.openPbr.baseMetalness = subMesh.openPbr.baseMetalness;
+                            subMeshDescriptor.openPbr.baseDiffuseRoughness =
+                                subMesh.openPbr.baseDiffuseRoughness;
+                            subMeshDescriptor.openPbr.specularWeight = subMesh.openPbr.specularWeight;
+                            subMeshDescriptor.openPbr.specularColor[0] = subMesh.openPbr.specularColor.x;
+                            subMeshDescriptor.openPbr.specularColor[1] = subMesh.openPbr.specularColor.y;
+                            subMeshDescriptor.openPbr.specularColor[2] = subMesh.openPbr.specularColor.z;
+                            subMeshDescriptor.openPbr.specularRoughness =
+                                subMesh.openPbr.specularRoughness;
+                            subMeshDescriptor.openPbr.specularRoughnessAnisotropy =
+                                subMesh.openPbr.specularRoughnessAnisotropy;
+                            subMeshDescriptor.openPbr.specularIor = subMesh.openPbr.specularIor;
                             if (subMesh.emissivePixels != null)
                             {
                                 var pixelsHandle = GCHandle.Alloc(subMesh.emissivePixels, GCHandleType.Pinned);

@@ -106,6 +106,7 @@ namespace Yutrel.PathTracer
         private sealed class SceneChangeTracker : IDisposable
         {
             private const double RuntimeStructureScanInterval = 0.25;
+            private const double EditorChangeDebounce = 0.15;
             private const string DefaultLitShaderName = "YutrelRP/DefaultLit";
             private const string UnlitShaderName = "YutrelRP/Unlit";
             private const string EmissiveColorProperty = "_Emissive";
@@ -128,6 +129,7 @@ namespace Yutrel.PathTracer
             private readonly HashSet<ulong> seenMeshIds = new();
             private readonly List<ulong> removedMeshIds = new();
             private readonly List<NativeBridge.SceneMeshUpdate> pendingUpdates = new();
+            private readonly List<Material> sharedMaterials = new();
 
             private Light selectedLight;
             private NativeBridge.DirectionalLightUpdate previousLight;
@@ -135,6 +137,7 @@ namespace Yutrel.PathTracer
             private bool initialized;
             private bool structureDirty = true;
             private double nextRuntimeStructureScan;
+            private double editorStructureScanNotBefore;
             private ulong revision;
 
             internal SceneChangeTracker()
@@ -160,7 +163,8 @@ namespace Yutrel.PathTracer
                 pendingUpdates.Clear();
                 var now = Time.realtimeSinceStartupAsDouble;
                 var runtimeScanDue = Application.isPlaying && now >= nextRuntimeStructureScan;
-                if (!initialized || structureDirty || runtimeScanDue)
+                var structureScanReady = !initialized || now >= editorStructureScanNotBefore;
+                if (structureScanReady && (!initialized || structureDirty || runtimeScanDue))
                 {
                     ScanStructure();
                     initialized = true;
@@ -361,7 +365,7 @@ namespace Yutrel.PathTracer
                     true);
             }
 
-            private static bool TryCreateMeshUpdate(
+            private bool TryCreateMeshUpdate(
                 MeshFilter filter,
                 out NativeBridge.SceneMeshUpdate update)
             {
@@ -409,7 +413,8 @@ namespace Yutrel.PathTracer
 
                 var indices = new List<uint>();
                 var subMeshes = new NativeBridge.SceneSubMeshUpdate[mesh.subMeshCount];
-                var materials = filter.GetComponent<MeshRenderer>().sharedMaterials;
+                sharedMaterials.Clear();
+                filter.GetComponent<MeshRenderer>().GetSharedMaterials(sharedMaterials);
                 for (var subMesh = 0; subMesh < mesh.subMeshCount; subMesh++)
                 {
                     if (mesh.GetTopology(subMesh) != MeshTopology.Triangles)
@@ -430,7 +435,9 @@ namespace Yutrel.PathTracer
                         indices.Add((uint)index);
                     }
                     var indexCount = (uint)indices.Count - indexOffset;
-                    var material = subMesh < materials.Length ? materials[subMesh] : null;
+                    var material = subMesh < sharedMaterials.Count
+                        ? sharedMaterials[subMesh]
+                        : null;
                     subMeshes[subMesh] = CreateSubMeshUpdate(
                         objectName,
                         material,
@@ -471,6 +478,42 @@ namespace Yutrel.PathTracer
                 uint textureHeight = 0;
                 var uvScale = Vector2.one;
                 var uvOffset = Vector2.zero;
+                var materialId = 0ul;
+                var materialType = NativeBridge.SceneMaterialType.FallbackDiffuse;
+                var openPbr = default(OpenPBRMaterialData);
+
+                if (material == null)
+                {
+                    NativeBridge.ReportInfoOnce(
+                        $"Yutrel Mesh '{objectName}' has no Material; gray Diffuse fallback is used.");
+                }
+                else
+                {
+                    materialId = EntityId.ToULong(material.GetEntityId());
+                    doubleSided = material.doubleSidedGI ||
+                                  material.HasProperty(CullModeProperty) &&
+                                  Mathf.RoundToInt(material.GetFloat(CullModeProperty)) ==
+                                  (int)CullMode.Off;
+                    if (OpenPBRMaterialAdapter.TryRead(material, out openPbr))
+                    {
+                        materialType = NativeBridge.SceneMaterialType.OpenPBR;
+                    }
+                    else if (OpenPBRMaterialAdapter.IsOpenPBR(material))
+                    {
+                        NativeBridge.ReportErrorOnce(
+                            $"Yutrel OpenPBR Material '{material.name}' has missing or invalid parameters; " +
+                            "gray Diffuse fallback is used.");
+                    }
+                    else
+                    {
+                        var shaderName = material.shader != null
+                            ? material.shader.name
+                            : "<missing>";
+                        NativeBridge.ReportInfoOnce(
+                            $"Yutrel Material '{material.name}' uses unsupported Shader '{shaderName}'; " +
+                            "gray Diffuse fallback is used.");
+                    }
+                }
 
                 if (material != null && material.HasProperty(EmissiveLuminanceProperty))
                 {
@@ -485,11 +528,6 @@ namespace Yutrel.PathTracer
                         ? material.GetColor(EmissiveColorProperty).linear
                         : Color.white;
                     color = PhotometricColor.NormalizeLinearSrgb(materialColor);
-                    doubleSided = material.doubleSidedGI ||
-                                  material.HasProperty(CullModeProperty) &&
-                                  Mathf.RoundToInt(material.GetFloat(CullModeProperty)) ==
-                                  (int)CullMode.Off;
-
                     var textureProperty = EmissiveTexturePropertyFor(material);
                     if (luminanceNits > 0.0f && textureProperty != null)
                     {
@@ -525,7 +563,10 @@ namespace Yutrel.PathTracer
                     textureWidth,
                     textureHeight,
                     uvScale,
-                    uvOffset);
+                    uvOffset,
+                    materialId,
+                    materialType,
+                    openPbr);
             }
 
             private static string EmissiveTexturePropertyFor(Material material)
@@ -603,15 +644,18 @@ namespace Yutrel.PathTracer
                 return true;
             }
 
-            private static int ComputeMaterialSignature(Mesh mesh, MeshRenderer renderer)
+            private int ComputeMaterialSignature(Mesh mesh, MeshRenderer renderer)
             {
                 unchecked
                 {
                     var hash = mesh.subMeshCount;
-                    var materials = renderer.sharedMaterials;
+                    sharedMaterials.Clear();
+                    renderer.GetSharedMaterials(sharedMaterials);
                     for (var subMesh = 0; subMesh < mesh.subMeshCount; subMesh++)
                     {
-                        var material = subMesh < materials.Length ? materials[subMesh] : null;
+                        var material = subMesh < sharedMaterials.Count
+                            ? sharedMaterials[subMesh]
+                            : null;
                         hash = hash * 397 ^ (material != null
                             ? EntityId.ToULong(material.GetEntityId()).GetHashCode()
                             : 0);
@@ -632,6 +676,10 @@ namespace Yutrel.PathTracer
                         if (material.HasProperty(CullModeProperty))
                         {
                             hash = hash * 397 ^ material.GetFloat(CullModeProperty).GetHashCode();
+                        }
+                        if (OpenPBRMaterialAdapter.IsOpenPBR(material))
+                        {
+                            hash = hash * 397 ^ OpenPBRMaterialAdapter.ComputeSignature(material);
                         }
                         var textureProperty = EmissiveTexturePropertyFor(material);
                         if (textureProperty == null)
@@ -709,6 +757,8 @@ namespace Yutrel.PathTracer
                 ref UnityEditor.ObjectChangeEventStream stream)
             {
                 structureDirty = true;
+                editorStructureScanNotBefore =
+                    Time.realtimeSinceStartupAsDouble + EditorChangeDebounce;
             }
 
             private void OnHierarchyChanged()

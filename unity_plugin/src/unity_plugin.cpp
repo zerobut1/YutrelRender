@@ -35,6 +35,7 @@
 #include "shapes/inline_mesh.h"
 #include "spectrum/hero.h"
 #include "surfaces/diffuse.h"
+#include "surfaces/openpbr.h"
 #include "textures/constant.h"
 #include "textures/scale.h"
 
@@ -43,7 +44,7 @@ namespace yutrel::unity {
 using namespace luisa;
 using namespace luisa::compute;
 
-constexpr uint32_t abi_version = 6u;
+constexpr uint32_t abi_version = 7u;
 constexpr int clear_event_id = 0;
 constexpr int path_trace_event_id = 1;
 constexpr size_t external_instance_capacity = 4096u;
@@ -65,6 +66,23 @@ enum class ExternalTextureEncoding : uint32_t {
     srgb = 1u,
 };
 
+enum class SceneMaterialType : uint32_t {
+    fallback_diffuse = 0u,
+    openpbr = 1u,
+};
+
+struct OpenPBRMaterialData {
+    float base_weight;
+    float base_color[3];
+    float base_metalness;
+    float base_diffuse_roughness;
+    float specular_weight;
+    float specular_color[3];
+    float specular_roughness;
+    float specular_roughness_anisotropy;
+    float specular_ior;
+};
+
 struct SceneSubMeshData {
     uint32_t index_offset;
     uint32_t index_count;
@@ -77,6 +95,9 @@ struct SceneSubMeshData {
     uint32_t texture_height;
     float uv_scale[2];
     float uv_offset[2];
+    uint64_t material_id;
+    SceneMaterialType material_type;
+    OpenPBRMaterialData openpbr;
 };
 
 struct SceneMeshDelta {
@@ -95,7 +116,8 @@ struct SceneMeshDelta {
     float local_to_world[16];
 };
 
-static_assert(sizeof(SceneSubMeshData) == 64u);
+static_assert(sizeof(OpenPBRMaterialData) == 52u);
+static_assert(sizeof(SceneSubMeshData) == 128u);
 static_assert(sizeof(SceneMeshDelta) == 136u);
 
 struct DirectionalLightData {
@@ -181,9 +203,16 @@ struct MeshSnapshot {
         uint2 texture_size;
         float2 uv_scale;
         float2 uv_offset;
+        uint64_t material_id;
+        SceneMaterialType material_type;
+        OpenPBRMaterialData openpbr;
 
         [[nodiscard]] bool emissive() const noexcept {
             return emissive_luminance_nits > 0.0f && any(emissive_color > 0.0f);
+        }
+
+        [[nodiscard]] bool has_openpbr() const noexcept {
+            return material_type == SceneMaterialType::openpbr;
         }
     };
 
@@ -198,6 +227,15 @@ struct MeshSnapshot {
     [[nodiscard]] bool has_emissive() const noexcept {
         for (auto &&submesh : submeshes) {
             if (submesh.emissive()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool has_openpbr() const noexcept {
+        for (auto &&submesh : submeshes) {
+            if (submesh.has_openpbr()) {
                 return true;
             }
         }
@@ -223,6 +261,20 @@ struct DesiredScene {
             }
         }
         return false;
+    }
+
+    [[nodiscard]] bool has_openpbr() const noexcept {
+        for (auto &&[id, mesh] : meshes) {
+            static_cast<void>(id);
+            if (mesh.has_openpbr()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool requires_static_scene() const noexcept {
+        return has_emissive() || has_openpbr();
     }
 };
 
@@ -291,6 +343,37 @@ struct DesiredScene {
         auto texture_size = make_uint2(source.texture_width, source.texture_height);
         auto texture_pixel_count = static_cast<uint64_t>(texture_size.x) * texture_size.y;
         auto has_texture = texture_size.x != 0u || texture_size.y != 0u;
+        auto openpbr_base_color = make_float3(
+            source.openpbr.base_color[0],
+            source.openpbr.base_color[1],
+            source.openpbr.base_color[2]);
+        auto openpbr_specular_color = make_float3(
+            source.openpbr.specular_color[0],
+            source.openpbr.specular_color[1],
+            source.openpbr.specular_color[2]);
+        auto valid_openpbr = std::isfinite(source.openpbr.base_weight) &&
+                             source.openpbr.base_weight >= 0.0f &&
+                             source.openpbr.base_weight <= 1.0f &&
+                             finite(openpbr_base_color) &&
+                             all(openpbr_base_color >= 0.0f) &&
+                             std::isfinite(source.openpbr.base_metalness) &&
+                             source.openpbr.base_metalness >= 0.0f &&
+                             source.openpbr.base_metalness <= 1.0f &&
+                             std::isfinite(source.openpbr.base_diffuse_roughness) &&
+                             source.openpbr.base_diffuse_roughness >= 0.0f &&
+                             source.openpbr.base_diffuse_roughness <= 1.0f &&
+                             std::isfinite(source.openpbr.specular_weight) &&
+                             source.openpbr.specular_weight >= 0.0f &&
+                             finite(openpbr_specular_color) &&
+                             all(openpbr_specular_color >= 0.0f) &&
+                             std::isfinite(source.openpbr.specular_roughness) &&
+                             source.openpbr.specular_roughness >= 0.0f &&
+                             source.openpbr.specular_roughness <= 1.0f &&
+                             std::isfinite(source.openpbr.specular_roughness_anisotropy) &&
+                             source.openpbr.specular_roughness_anisotropy >= 0.0f &&
+                             source.openpbr.specular_roughness_anisotropy <= 1.0f &&
+                             std::isfinite(source.openpbr.specular_ior) &&
+                             source.openpbr.specular_ior > 0.0f;
         if (source.index_offset != expected_index_offset || source.index_count == 0u ||
             source.index_count % 3u != 0u ||
             static_cast<uint64_t>(source.index_offset) + source.index_count > data.index_count ||
@@ -303,7 +386,10 @@ struct DesiredScene {
             (!has_texture && source.emissive_pixels != nullptr) ||
             texture_pixel_count > std::numeric_limits<uint32_t>::max() ||
             !std::isfinite(source.uv_scale[0]) || !std::isfinite(source.uv_scale[1]) ||
-            !std::isfinite(source.uv_offset[0]) || !std::isfinite(source.uv_offset[1])) {
+            !std::isfinite(source.uv_offset[0]) || !std::isfinite(source.uv_offset[1]) ||
+            source.material_type > SceneMaterialType::openpbr ||
+            (source.material_type == SceneMaterialType::openpbr &&
+             (source.material_id == 0u || !valid_openpbr))) {
             return false;
         }
         MeshSnapshot::SubMesh submesh{
@@ -316,6 +402,9 @@ struct DesiredScene {
             .texture_size = texture_size,
             .uv_scale = make_float2(source.uv_scale[0], source.uv_scale[1]),
             .uv_offset = make_float2(source.uv_offset[0], source.uv_offset[1]),
+            .material_id = source.material_id,
+            .material_type = source.material_type,
+            .openpbr = source.openpbr,
         };
         submesh.emissive_pixels.reserve(texture_pixel_count);
         for (auto pixel_index = 0ull; pixel_index < texture_pixel_count; pixel_index++) {
@@ -488,7 +577,7 @@ public:
         source, make_float4(0.5f, 0.5f, 0.5f, 1.0f));
     auto emission = builder.add_anonymous_texture<ConstantTextureSpec>(
         source, make_float4(1.0f));
-    auto surface = builder.add_anonymous_surface<DiffuseSurfaceSpec>(source, albedo, true);
+    auto default_surface = builder.add_anonymous_surface<DiffuseSurfaceSpec>(source, albedo, true);
     auto spectrum = builder.add_anonymous_spectrum<HeroWavelengthSpectrumSpec>(source);
     auto environment = builder.add_anonymous_environment<DistantEnvironmentSpec>(
         source,
@@ -511,8 +600,8 @@ public:
     auto filter = builder.add_anonymous_filter<BoxFilterSpec>(source, 0.5f);
     auto sampler = builder.add_anonymous_sampler<IndependentSamplerSpec>(source, 1u, 0u);
     auto integrator = builder.add_anonymous_integrator<PathIntegratorSpec>(source, 4u);
-    auto contains_emissive = snapshot.has_emissive();
-    if (!contains_emissive) {
+    auto requires_static_scene = snapshot.requires_static_scene();
+    if (!requires_static_scene) {
         instance_ids.reserve(snapshot.meshes.size());
         for (auto &&[mesh_id, mesh] : snapshot.meshes) {
             auto shape = builder.add_anonymous_shape<InlineMeshShapeSpec>(
@@ -524,12 +613,49 @@ public:
             builder.add_instance(ShapeInstanceSpec{
                 .source = source,
                 .shape = shape,
-                .surface = surface,
+                .surface = default_surface,
                 .transform = mesh.local_to_world,
             });
             instance_ids.emplace_back(mesh_id);
         }
     } else {
+        luisa::unordered_map<uint64_t, SurfaceRef> material_surfaces;
+        auto surface_for = [&](const MeshSnapshot::SubMesh &submesh) -> SurfaceRef {
+            if (!submesh.has_openpbr()) {
+                return default_surface;
+            }
+            if (auto iter = material_surfaces.find(submesh.material_id);
+                iter != material_surfaces.end()) {
+                return iter->second;
+            }
+            auto constant_scalar = [&](float value) {
+                return builder.add_anonymous_texture<ConstantTextureSpec>(
+                    source, make_float4(value));
+            };
+            auto constant_color = [&](const float values[3]) {
+                return builder.add_anonymous_texture<ConstantTextureSpec>(
+                    source,
+                    make_float4(values[0], values[1], values[2], 1.0f));
+            };
+            auto &&material = submesh.openpbr;
+            auto surface = builder.add_anonymous_surface<OpenPBRSurfaceSpec>(
+                source,
+                OpenPBRSurfaceParams{
+                    .base_weight = constant_scalar(material.base_weight),
+                    .base_color = constant_color(material.base_color),
+                    .base_metalness = constant_scalar(material.base_metalness),
+                    .base_diffuse_roughness = constant_scalar(material.base_diffuse_roughness),
+                    .specular_weight = constant_scalar(material.specular_weight),
+                    .specular_color = constant_color(material.specular_color),
+                    .specular_roughness = constant_scalar(material.specular_roughness),
+                    .specular_roughness_anisotropy =
+                        constant_scalar(material.specular_roughness_anisotropy),
+                    .specular_ior = constant_scalar(material.specular_ior),
+                    .two_sided = submesh.double_sided,
+                });
+            material_surfaces.emplace(submesh.material_id, surface);
+            return surface;
+        };
         for (auto &&[mesh_id, mesh] : snapshot.meshes) {
             static_cast<void>(mesh_id);
             for (auto &&submesh : mesh.submeshes) {
@@ -549,7 +675,7 @@ public:
                 ShapeInstanceSpec instance{
                     .source = source,
                     .shape = shape,
-                    .surface = surface,
+                    .surface = surface_for(submesh),
                     .transform = mesh.local_to_world,
                 };
                 if (submesh.emissive()) {
@@ -619,7 +745,7 @@ private:
         luisa::unordered_map<uint32_t, ViewRuntime> views;
         Yutrel::ExternalCameraState active_camera{};
         bool active_camera_valid{};
-        bool contains_emissive{};
+        bool requires_static_scene{};
         uint64_t applied_revision{};
 
         [[nodiscard]] ViewRuntime &view(uint32_t view_id) {
@@ -894,7 +1020,7 @@ private:
 
         auto runtime = luisa::make_unique<SceneRuntime>();
         luisa::vector<uint64_t> instance_ids;
-        runtime->contains_emissive = _desired_scene.has_emissive();
+        runtime->requires_static_scene = _desired_scene.requires_static_scene();
         runtime->scene = create_scene(_desired_scene, camera, instance_ids);
         if (runtime->scene == nullptr) {
             report_path_error_once(path_error_scene, "Failed to create the Unity Yutrel scene.");
@@ -915,7 +1041,7 @@ private:
             return false;
         }
         Yutrel::CommandBuffer commands{_stream};
-        if ((!runtime->contains_emissive &&
+        if ((!runtime->requires_static_scene &&
              !runtime->renderer->prepare_external_scene_updates(
                  commands,
                  instance_ids,
@@ -945,11 +1071,11 @@ private:
     }
 
     [[nodiscard]] bool scene_requires_rebuild(const SceneRuntime &runtime) const noexcept {
-        auto desired_contains_emissive = _desired_scene.has_emissive();
-        if (runtime.contains_emissive != desired_contains_emissive) {
+        auto desired_requires_static_scene = _desired_scene.requires_static_scene();
+        if (runtime.requires_static_scene != desired_requires_static_scene) {
             return true;
         }
-        if (!runtime.contains_emissive) {
+        if (!runtime.requires_static_scene) {
             return false;
         }
         if (runtime.applied_meshes.size() != _desired_scene.meshes.size()) {
@@ -1063,7 +1189,7 @@ private:
         if (scene_requires_rebuild(*_scene_runtime)) {
             _scene_runtime = nullptr;
             if (!ensure_runtime(camera)) {
-                report_path_error_once(path_error_scene, "Failed to rebuild the Unity emissive scene.");
+                report_path_error_once(path_error_scene, "Failed to rebuild the Unity material scene.");
                 return false;
             }
         }
