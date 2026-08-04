@@ -105,7 +105,11 @@ namespace Yutrel.PathTracer
 
         private sealed class SceneChangeTracker : IDisposable
         {
-            private const double RuntimeStructureScanInterval = 0.25;
+            // Periodic full scan interval (both Edit and Play mode).
+            // This guarantees material/shader parameter tweaks are picked up
+            // within this interval even when ObjectChangeEvents does not fire
+            // (e.g. Inspector drags on Material assets).
+            private const double StructureScanInterval = 0.25;
             private const double EditorChangeDebounce = 0.15;
             private const string DefaultLitShaderName = "YutrelRP/DefaultLit";
             private const string UnlitShaderName = "YutrelRP/Unlit";
@@ -136,7 +140,7 @@ namespace Yutrel.PathTracer
             private bool previousLightValid;
             private bool initialized;
             private bool structureDirty = true;
-            private double nextRuntimeStructureScan;
+            private double nextStructureScan;
             private double editorStructureScanNotBefore;
             private ulong revision;
 
@@ -162,14 +166,19 @@ namespace Yutrel.PathTracer
             {
                 pendingUpdates.Clear();
                 var now = Time.realtimeSinceStartupAsDouble;
-                var runtimeScanDue = Application.isPlaying && now >= nextRuntimeStructureScan;
+                // Scan periodically in both Play and Edit mode so that material
+                // parameter changes always become visible without relying on
+                // editor change events (which are not guaranteed for Material
+                // Inspector edits). The native plugin restarts accumulation
+                // (1spp) automatically whenever a scene delta is applied.
+                var scanDue = now >= nextStructureScan;
                 var structureScanReady = !initialized || now >= editorStructureScanNotBefore;
-                if (structureScanReady && (!initialized || structureDirty || runtimeScanDue))
+                if (structureScanReady && (!initialized || structureDirty || scanDue))
                 {
                     ScanStructure();
                     initialized = true;
                     structureDirty = false;
-                    nextRuntimeStructureScan = now + RuntimeStructureScanInterval;
+                    nextStructureScan = now + StructureScanInterval;
                 }
 
                 CompareTransforms();
@@ -756,9 +765,39 @@ namespace Yutrel.PathTracer
             private void OnObjectChangesPublished(
                 ref UnityEditor.ObjectChangeEventStream stream)
             {
-                structureDirty = true;
-                editorStructureScanNotBefore =
-                    Time.realtimeSinceStartupAsDouble + EditorChangeDebounce;
+                // Event-driven fast path (like Blender's depsgraph tagging):
+                // schedule a re-scan as soon as anything the path tracer reads
+                // changes. Only kinds that can affect the rendered scene are
+                // handled; irrelevant events (e.g. pure scene transitions) are
+                // ignored because the periodic scan below is the safety net
+                // for anything this filter misses.
+                for (var i = 0; i < stream.length; i++)
+                {
+                    switch (stream.GetEventType(i))
+                    {
+                        // Material/Texture/Shader/Mesh asset edits, object
+                        // structure and component property changes all affect
+                        // the captured scene.
+                        case UnityEditor.ObjectChangeKind.ChangeAssetObjectProperties:
+                        case UnityEditor.ObjectChangeKind.CreateAssetObject:
+                        case UnityEditor.ObjectChangeKind.DestroyAssetObject:
+                        case UnityEditor.ObjectChangeKind.ChangeGameObjectOrComponentProperties:
+                        case UnityEditor.ObjectChangeKind.CreateGameObjectHierarchy:
+                        case UnityEditor.ObjectChangeKind.DestroyGameObjectHierarchy:
+                        case UnityEditor.ObjectChangeKind.ChangeGameObjectStructure:
+                        case UnityEditor.ObjectChangeKind.ChangeGameObjectStructureHierarchy:
+                        case UnityEditor.ObjectChangeKind.ChangeGameObjectParent:
+                        case UnityEditor.ObjectChangeKind.ChangeChildrenOrder:
+                        case UnityEditor.ObjectChangeKind.ChangeRootOrder:
+                        case UnityEditor.ObjectChangeKind.UpdatePrefabInstances:
+                            structureDirty = true;
+                            editorStructureScanNotBefore =
+                                Time.realtimeSinceStartupAsDouble + EditorChangeDebounce;
+                            return;
+                        default:
+                            continue;
+                    }
+                }
             }
 
             private void OnHierarchyChanged()
