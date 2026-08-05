@@ -1,5 +1,10 @@
 #include "sampling.h"
 
+#include <algorithm>
+#include <numeric>
+
+#include <luisa/core/logging.h>
+
 namespace Yutrel
 {
 
@@ -202,6 +207,47 @@ create_alias_table(luisa::span<const float> values) noexcept
     }
 
     return std::make_pair(std::move(table), std::move(pdf));
+}
+
+AliasDistribution2D create_alias_distribution_2d(
+    luisa::span<const float> weights, uint2 resolution) noexcept
+{
+    auto pixel_count = static_cast<size_t>(resolution.x) * resolution.y;
+    LUISA_ASSERT(
+        weights.size() == pixel_count,
+        "Invalid 2D alias distribution size: expected {}, got {}.",
+        pixel_count,
+        weights.size());
+
+    luisa::vector<float> row_averages(resolution.y);
+    AliasDistribution2D distribution{
+        .aliases = luisa::vector<AliasEntry>(resolution.y + pixel_count),
+        .pdfs = luisa::vector<float>(pixel_count),
+    };
+    for (auto y = 0u; y < resolution.y; y++)
+    {
+        auto row = weights.subspan(static_cast<size_t>(y) * resolution.x, resolution.x);
+        auto row_sum = std::accumulate(row.begin(), row.end(), 0.0);
+        row_averages[y] = static_cast<float>(row_sum / resolution.x);
+        auto [row_aliases, row_pdfs] = create_alias_table(row);
+        std::copy(row_aliases.begin(), row_aliases.end(),
+                  distribution.aliases.begin() + resolution.y + static_cast<size_t>(y) * resolution.x);
+        std::copy(row_pdfs.begin(), row_pdfs.end(),
+                  distribution.pdfs.begin() + static_cast<size_t>(y) * resolution.x);
+    }
+
+    auto [marginal_aliases, marginal_pdfs] = create_alias_table(row_averages);
+    std::copy(marginal_aliases.begin(), marginal_aliases.end(), distribution.aliases.begin());
+    auto uv_cell_count = static_cast<float>(pixel_count);
+    for (auto y = 0u; y < resolution.y; y++)
+    {
+        auto scale = marginal_pdfs[y] * uv_cell_count;
+        for (auto x = 0u; x < resolution.x; x++)
+        {
+            distribution.pdfs[static_cast<size_t>(y) * resolution.x + x] *= scale;
+        }
+    }
+    return distribution;
 }
 
 Float balance_heuristic(Expr<uint> nf, Expr<float> fPdf, Expr<uint> ng, Expr<float> gPdf) noexcept

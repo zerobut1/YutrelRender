@@ -1,4 +1,4 @@
-#include "pbrt_equal_area.h"
+#include "latlong.h"
 
 #include <algorithm>
 #include <numeric>
@@ -8,24 +8,59 @@
 #include "base/interaction.h"
 #include "base/renderer.h"
 #include "scene/scene_builder.h"
+#include "utils/color_space.h"
 #include "utils/sampling.h"
 
 namespace Yutrel
 {
 namespace
 {
-constexpr auto inv_four_pi = 0.25f * inv_pi;
+constexpr auto inv_two_pi = 0.5f * inv_pi;
+constexpr auto two_pi = 2.0f * pi;
+constexpr auto inv_two_pi_squared = 0.5f * inv_pi * inv_pi;
 }
 
-SampledSpectrum PBRTEqualAreaEnvironment::Instance::_evaluate_radiance(
+Float2 LatLongEnvironment::direction_to_uv(Expr<float3> direction) noexcept
+{
+    auto w = normalize(direction);
+    auto phi = atan2(w.x, w.z);
+    auto u = fract(phi * inv_two_pi + 0.5f);
+    auto v = acos(clamp(w.y, -1.0f, 1.0f)) * inv_pi;
+    return make_float2(u, v);
+}
+
+Float3 LatLongEnvironment::uv_to_direction(Expr<float2> uv) noexcept
+{
+    auto phi = (uv.x - 0.5f) * two_pi;
+    auto theta = uv.y * pi;
+    auto sin_theta = sin(theta);
+    return normalize(make_float3(
+        sin(phi) * sin_theta,
+        cos(theta),
+        cos(phi) * sin_theta));
+}
+
+SampledSpectrum LatLongEnvironment::Instance::_evaluate_radiance(
     Expr<float2> uv, const SampledWavelengths& swl, Expr<float> time) const noexcept
 {
-    auto it = Interaction::from_uv(uv);
+    auto half_texel_v = 0.5f / static_cast<float>(_resolution.y);
+    auto sample_uv = make_float2(
+        fract(uv.x),
+        clamp(uv.y, half_texel_v, 1.0f - half_texel_v));
+    auto it = Interaction::from_uv(sample_uv);
     return _emission->evaluate_illuminant_spectrum(it, swl, time).value *
-           base<PBRTEqualAreaEnvironment>()->scale();
+           base<LatLongEnvironment>()->scale();
 }
 
-Environment::Evaluation PBRTEqualAreaEnvironment::Instance::evaluate(
+Float LatLongEnvironment::Instance::_directional_pdf(
+    Expr<float> pdf_uv, Expr<float> theta) noexcept
+{
+    auto sin_theta = sin(theta);
+    auto inv_sin_theta = ite(sin_theta > 0.0f, 1.0f / sin_theta, 0.0f);
+    return pdf_uv * inv_sin_theta * inv_two_pi_squared;
+}
+
+Environment::Evaluation LatLongEnvironment::Instance::evaluate(
     Expr<float3> wi, const SampledWavelengths& swl, Expr<float> time,
     bool allow_incomplete_pdf) const noexcept
 {
@@ -33,18 +68,18 @@ Environment::Evaluation PBRTEqualAreaEnvironment::Instance::evaluate(
     auto result = Evaluation::zero(swl.dimension());
     $outline
     {
-        Float3x3 transform_to_world = base<PBRTEqualAreaEnvironment>()->transform_to_world();
+        Float3x3 transform_to_world = base<LatLongEnvironment>()->transform_to_world();
         auto wi_local = normalize(transpose(transform_to_world) * normalize(wi));
-        auto uv = equal_area_sphere_to_square(wi_local);
+        auto uv = direction_to_uv(wi_local);
         auto size = make_float2(_resolution);
         auto pixel = make_uint2(
             cast<uint>(clamp(uv.x * size.x, 0.0f, size.x - 1.0f)),
             cast<uint>(clamp(uv.y * size.y, 0.0f, size.y - 1.0f)));
-        auto p_uv = renderer().buffer<float>(_pdf_buffer_id).read(
+        auto pdf_uv = renderer().buffer<float>(_pdf_buffer_id).read(
             pdf_offset + pixel.y * _resolution.x + pixel.x);
         result = {
             .L = _evaluate_radiance(uv, swl, time),
-            .pdf = p_uv * inv_four_pi,
+            .pdf = _directional_pdf(pdf_uv, uv.y * pi),
             .p = make_float3(0.0f),
             .ng = make_float3(0.0f),
         };
@@ -52,12 +87,12 @@ Environment::Evaluation PBRTEqualAreaEnvironment::Instance::evaluate(
     return result;
 }
 
-Environment::Sample PBRTEqualAreaEnvironment::Instance::sample(
+Environment::Sample LatLongEnvironment::Instance::sample(
     const SampledWavelengths& swl, Expr<float> time, Expr<float2> u,
     bool allow_incomplete_pdf) const noexcept
 {
     auto alias_offset = allow_incomplete_pdf ? _alias_distribution_stride : 0u;
-    auto pdf_offset   = allow_incomplete_pdf ? _pdf_distribution_stride : 0u;
+    auto pdf_offset = allow_incomplete_pdf ? _pdf_distribution_stride : 0u;
     auto result = Sample::zero(swl.dimension());
     $outline
     {
@@ -66,41 +101,46 @@ Environment::Sample PBRTEqualAreaEnvironment::Instance::sample(
             aliases, _resolution.y, u.y, alias_offset);
         auto row_offset = alias_offset + _resolution.y + iy * _resolution.x;
         auto [ix, ux] = sample_alias_table(aliases, _resolution.x, u.x, row_offset);
-        auto uv = (make_float2(cast<float>(ix) + ux, cast<float>(iy) + uy)) /
+        auto uv = make_float2(cast<float>(ix) + ux, cast<float>(iy) + uy) /
                   make_float2(_resolution);
-        auto p_uv = renderer().buffer<float>(_pdf_buffer_id).read(
+        auto pdf_uv = renderer().buffer<float>(_pdf_buffer_id).read(
             pdf_offset + iy * _resolution.x + ix);
-        auto wi_local = equal_area_square_to_sphere(uv);
-        Float3x3 transform_to_world = base<PBRTEqualAreaEnvironment>()->transform_to_world();
-        auto wi = normalize(transform_to_world * wi_local);
+        auto wi_local = uv_to_direction(uv);
+        Float3x3 transform_to_world = base<LatLongEnvironment>()->transform_to_world();
         result = {
             .eval = {
                 .L = _evaluate_radiance(uv, swl, time),
-                .pdf = p_uv * inv_four_pi,
+                .pdf = _directional_pdf(pdf_uv, uv.y * pi),
                 .p = make_float3(0.0f),
                 .ng = make_float3(0.0f),
             },
-            .wi = wi,
+            .wi = normalize(transform_to_world * wi_local),
             .delta = false,
         };
     };
     return result;
 }
 
-luisa::unique_ptr<Environment::Instance> PBRTEqualAreaEnvironment::build(
+luisa::unique_ptr<Environment::Instance> LatLongEnvironment::build(
     Renderer& renderer, CommandBuffer& command_buffer) const noexcept
 {
+    if (_scale == 0.0f)
+    {
+        return nullptr;
+    }
+
     auto resolution = _emission->resolution();
-    if (resolution.x == 0u || resolution.y == 0u || resolution.x != resolution.y)
+    if (resolution.x == 0u || resolution.y == 0u ||
+        static_cast<uint64_t>(resolution.x) != 2ull * resolution.y)
     {
         LUISA_ERROR_WITH_LOCATION(
-            "PBRT equal-area environment image must be non-empty and square, got {}x{}.",
+            "Lat-long environment image must have a non-empty 2:1 resolution, got {}x{}.",
             resolution.x, resolution.y);
     }
     if (_emission->channels() < 3u)
     {
         LUISA_ERROR_WITH_LOCATION(
-            "PBRT equal-area environment image must have RGB channels, got {} channel(s).",
+            "Lat-long environment image must have RGB channels, got {} channel(s).",
             _emission->channels());
     }
 
@@ -117,10 +157,15 @@ luisa::unique_ptr<Environment::Instance> PBRTEqualAreaEnvironment::build(
     {
         auto pixel = dispatch_id().xy();
         auto uv = (make_float2(pixel) + 0.5f) / make_float2(resolution);
-        auto it = Interaction::from_uv(uv);
-        auto rgb = max(texture->evaluate(it, 0.0f).xyz(), 0.0f);
-        auto finite = !any(compute::isnan(rgb) || compute::isinf(rgb));
-        auto weight = ite(finite, (rgb.x + rgb.y + rgb.z) * (1.0f / 3.0f), 0.0f);
+        auto rgb = texture->evaluate(Interaction::from_uv(uv), 0.0f).xyz();
+        auto finite_rgb = !any(compute::isnan(rgb) || compute::isinf(rgb));
+        auto luminance = linear_srgb_to_cie_y(max(rgb, 0.0f));
+        auto finite_luminance = !compute::isnan(luminance) & !compute::isinf(luminance);
+        auto sin_theta = sin(pi * uv.y);
+        auto weight = ite(
+            finite_rgb & finite_luminance,
+            min(max(luminance, 0.0f) * sin_theta, 1.0e8f),
+            0.0f);
         device_weights->write(pixel.y * resolution.x + pixel.x, weight);
     };
     auto generate_weights = renderer.device().compile(generate_weights_kernel);
@@ -134,8 +179,6 @@ luisa::unique_ptr<Environment::Instance> PBRTEqualAreaEnvironment::build(
         return nullptr;
     }
 
-    // PBRT-v4's incomplete PDF removes the image-wide average so that
-    // direct-light samples focus on energy that BSDF sampling is less likely to find.
     auto compensated_weights = weights;
     auto average = static_cast<float>(total_weight / pixel_count);
     for (auto& weight : compensated_weights)
@@ -156,7 +199,7 @@ luisa::unique_ptr<Environment::Instance> PBRTEqualAreaEnvironment::build(
     LUISA_ASSERT(
         incomplete.aliases.size() == alias_distribution_stride &&
             incomplete.pdfs.size() == pdf_distribution_stride,
-        "Mismatched complete and incomplete environment distribution sizes.");
+        "Mismatched complete and incomplete lat-long environment distributions.");
 
     luisa::vector<AliasEntry> aliases(static_cast<size_t>(alias_distribution_stride) * 2u);
     luisa::vector<float> pdfs(static_cast<size_t>(pdf_distribution_stride) * 2u);
@@ -178,11 +221,11 @@ luisa::unique_ptr<Environment::Instance> PBRTEqualAreaEnvironment::build(
         alias_distribution_stride, pdf_distribution_stride);
 }
 
-luisa::optional<luisa::string> PBRTEqualAreaEnvironmentSpec::validate() const noexcept
+luisa::optional<luisa::string> LatLongEnvironmentSpec::validate() const noexcept
 {
     if (!std::isfinite(_scale) || _scale < 0.0f)
     {
-        return spec_validation_error("PBRT equal-area environment scale must be finite and non-negative.");
+        return spec_validation_error("Lat-long environment scale must be finite and non-negative.");
     }
     constexpr auto epsilon = 1e-4f;
     for (auto c = 0u; c < 3u; c++)
@@ -191,32 +234,33 @@ luisa::optional<luisa::string> PBRTEqualAreaEnvironmentSpec::validate() const no
         {
             if (!std::isfinite(_transform_to_world[c][r]))
             {
-                return spec_validation_error("PBRT equal-area environment transform contains a non-finite value.");
+                return spec_validation_error("Lat-long environment transform contains a non-finite value.");
             }
         }
         auto length_squared = dot(_transform_to_world[c], _transform_to_world[c]);
         if (std::abs(length_squared - 1.0f) > epsilon)
         {
-            return spec_validation_error("PBRT equal-area environment transform must be orthogonal (scale is not supported).");
+            return spec_validation_error("Lat-long environment transform must be orthogonal (scale is not supported).");
         }
     }
     if (std::abs(dot(_transform_to_world[0], _transform_to_world[1])) > epsilon ||
         std::abs(dot(_transform_to_world[0], _transform_to_world[2])) > epsilon ||
         std::abs(dot(_transform_to_world[1], _transform_to_world[2])) > epsilon)
     {
-        return spec_validation_error("PBRT equal-area environment transform must be orthogonal (shear is not supported).");
+        return spec_validation_error("Lat-long environment transform must be orthogonal (shear is not supported).");
     }
-    auto determinant = dot(_transform_to_world[0], cross(_transform_to_world[1], _transform_to_world[2]));
+    auto determinant = dot(
+        _transform_to_world[0], cross(_transform_to_world[1], _transform_to_world[2]));
     if (std::abs(std::abs(determinant) - 1.0f) > 4.0f * epsilon)
     {
-        return spec_validation_error("PBRT equal-area environment transform determinant must be +1 or -1.");
+        return spec_validation_error("Lat-long environment transform determinant must be +1 or -1.");
     }
     return luisa::nullopt;
 }
 
-const Environment* PBRTEqualAreaEnvironmentSpec::build(SceneBuilder& builder) const noexcept
+const Environment* LatLongEnvironmentSpec::build(SceneBuilder& builder) const noexcept
 {
-    return builder.emplace<Environment, PBRTEqualAreaEnvironment>(
+    return builder.emplace<Environment, LatLongEnvironment>(
         builder.resolve(_emission), _scale, _transform_to_world);
 }
 

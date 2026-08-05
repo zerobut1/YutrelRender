@@ -23,9 +23,21 @@ struct AliasEntry
     float prob;
     uint alias;
 };
+
+struct AliasDistribution2D
+{
+    luisa::vector<AliasEntry> aliases;
+    luisa::vector<float> pdfs;
+};
+
 // reference: https://github.com/AirGuanZ/agz-utils
 [[nodiscard]] std::pair<luisa::vector<AliasEntry>, luisa::vector<float> /* pdf */>
 create_alias_table(luisa::span<const float> values) noexcept;
+
+// The alias buffer stores the marginal Y distribution first, followed by
+// one conditional X distribution per row. PDFs are densities over [0, 1)^2.
+[[nodiscard]] AliasDistribution2D create_alias_distribution_2d(
+    luisa::span<const float> weights, uint2 resolution) noexcept;
 
 template <typename Table>
 [[nodiscard]] inline auto sample_alias_table(
