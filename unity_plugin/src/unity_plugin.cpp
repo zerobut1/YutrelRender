@@ -5,6 +5,7 @@
 
 #include <Windows.h>
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <exception>
@@ -44,7 +45,7 @@ namespace yutrel::unity {
 using namespace luisa;
 using namespace luisa::compute;
 
-constexpr uint32_t abi_version = 7u;
+constexpr uint32_t abi_version = 8u;
 constexpr int clear_event_id = 0;
 constexpr int path_trace_event_id = 1;
 constexpr size_t external_instance_capacity = 4096u;
@@ -127,6 +128,16 @@ struct DirectionalLightData {
     uint32_t enabled;
 };
 
+struct SceneMaterialUpdateData {
+    uint64_t mesh_id;
+    uint32_t submesh_index;
+    uint64_t material_id;
+    uint32_t double_sided;
+    OpenPBRMaterialData openpbr;
+};
+
+static_assert(sizeof(SceneMaterialUpdateData) == 80u);
+
 struct SceneDeltaData {
     uint32_t abi_version;
     uint32_t struct_size;
@@ -136,10 +147,13 @@ struct SceneDeltaData {
     uint32_t mesh_struct_size;
     DirectionalLightData light;
     uint32_t light_changed;
+    const SceneMaterialUpdateData *material_updates;
+    uint32_t material_update_count;
+    uint32_t material_update_struct_size;
 };
 
 static_assert(sizeof(DirectionalLightData) == 32u);
-static_assert(sizeof(SceneDeltaData) == 72u);
+static_assert(sizeof(SceneDeltaData) == 88u);
 
 struct PathTraceEventData {
     uint32_t abi_version;
@@ -223,6 +237,7 @@ struct MeshSnapshot {
     luisa::vector<SubMesh> submeshes;
     float4x4 local_to_world;
     uint64_t geometry_revision{};
+    uint64_t material_revision{};
 
     [[nodiscard]] bool has_emissive() const noexcept {
         for (auto &&submesh : submeshes) {
@@ -277,6 +292,40 @@ struct DesiredScene {
         return has_emissive() || has_openpbr();
     }
 };
+
+[[nodiscard]] bool valid_openpbr(const OpenPBRMaterialData &material) noexcept {
+    auto base_color = make_float3(
+        material.base_color[0],
+        material.base_color[1],
+        material.base_color[2]);
+    auto specular_color = make_float3(
+        material.specular_color[0],
+        material.specular_color[1],
+        material.specular_color[2]);
+    return std::isfinite(material.base_weight) &&
+           material.base_weight >= 0.0f &&
+           material.base_weight <= 1.0f &&
+           finite(base_color) &&
+           all(base_color >= 0.0f) &&
+           std::isfinite(material.base_metalness) &&
+           material.base_metalness >= 0.0f &&
+           material.base_metalness <= 1.0f &&
+           std::isfinite(material.base_diffuse_roughness) &&
+           material.base_diffuse_roughness >= 0.0f &&
+           material.base_diffuse_roughness <= 1.0f &&
+           std::isfinite(material.specular_weight) &&
+           material.specular_weight >= 0.0f &&
+           finite(specular_color) &&
+           all(specular_color >= 0.0f) &&
+           std::isfinite(material.specular_roughness) &&
+           material.specular_roughness >= 0.0f &&
+           material.specular_roughness <= 1.0f &&
+           std::isfinite(material.specular_roughness_anisotropy) &&
+           material.specular_roughness_anisotropy >= 0.0f &&
+           material.specular_roughness_anisotropy <= 1.0f &&
+           std::isfinite(material.specular_ior) &&
+           material.specular_ior > 0.0f;
+}
 
 [[nodiscard]] bool copy_mesh(
     const SceneMeshDelta &data,
@@ -351,29 +400,7 @@ struct DesiredScene {
             source.openpbr.specular_color[0],
             source.openpbr.specular_color[1],
             source.openpbr.specular_color[2]);
-        auto valid_openpbr = std::isfinite(source.openpbr.base_weight) &&
-                             source.openpbr.base_weight >= 0.0f &&
-                             source.openpbr.base_weight <= 1.0f &&
-                             finite(openpbr_base_color) &&
-                             all(openpbr_base_color >= 0.0f) &&
-                             std::isfinite(source.openpbr.base_metalness) &&
-                             source.openpbr.base_metalness >= 0.0f &&
-                             source.openpbr.base_metalness <= 1.0f &&
-                             std::isfinite(source.openpbr.base_diffuse_roughness) &&
-                             source.openpbr.base_diffuse_roughness >= 0.0f &&
-                             source.openpbr.base_diffuse_roughness <= 1.0f &&
-                             std::isfinite(source.openpbr.specular_weight) &&
-                             source.openpbr.specular_weight >= 0.0f &&
-                             finite(openpbr_specular_color) &&
-                             all(openpbr_specular_color >= 0.0f) &&
-                             std::isfinite(source.openpbr.specular_roughness) &&
-                             source.openpbr.specular_roughness >= 0.0f &&
-                             source.openpbr.specular_roughness <= 1.0f &&
-                             std::isfinite(source.openpbr.specular_roughness_anisotropy) &&
-                             source.openpbr.specular_roughness_anisotropy >= 0.0f &&
-                             source.openpbr.specular_roughness_anisotropy <= 1.0f &&
-                             std::isfinite(source.openpbr.specular_ior) &&
-                             source.openpbr.specular_ior > 0.0f;
+        auto valid_openpbr_params = valid_openpbr(source.openpbr);
         if (source.index_offset != expected_index_offset || source.index_count == 0u ||
             source.index_count % 3u != 0u ||
             static_cast<uint64_t>(source.index_offset) + source.index_count > data.index_count ||
@@ -389,7 +416,7 @@ struct DesiredScene {
             !std::isfinite(source.uv_offset[0]) || !std::isfinite(source.uv_offset[1]) ||
             source.material_type > SceneMaterialType::openpbr ||
             (source.material_type == SceneMaterialType::openpbr &&
-             (source.material_id == 0u || !valid_openpbr))) {
+             (source.material_id == 0u || !valid_openpbr_params))) {
             return false;
         }
         MeshSnapshot::SubMesh submesh{
@@ -565,10 +592,109 @@ public:
     }
 };
 
+// 1x1 bindless image texture holding a single OpenPBR material parameter.
+// The device image is created during scene build and its handle is published
+// into the per-material registry slot (`Image<float> **`). Material parameter
+// edits afterwards only need to `copy_from` new values into the same image:
+// the compiled kernel reads the bindless handle, so no re-trace/recompile is
+// required. `Image<T>` is move-only, so the registry stores raw pointers into
+// the renderer-owned resources (lifetime == SceneRuntime).
+class UnityMaterialParamTexture final : public Yutrel::Texture {
+public:
+    class Instance final : public Yutrel::Texture::Instance {
+    private:
+        uint32_t _texture_id;
+
+    public:
+        Instance(
+            const Yutrel::Renderer &renderer,
+            const Yutrel::Texture *texture,
+            uint32_t texture_id) noexcept
+            : Yutrel::Texture::Instance{renderer, texture},
+              _texture_id{texture_id} {}
+
+        [[nodiscard]] Float4 evaluate(
+            const Yutrel::Interaction &interaction,
+            Expr<float> time) const noexcept override {
+            static_cast<void>(interaction);
+            static_cast<void>(time);
+            return renderer().tex2d(_texture_id).read(make_uint2(0u));
+        }
+    };
+
+private:
+    Image<float> **_image_slot;
+    float4 _pixels;
+
+public:
+    UnityMaterialParamTexture(Image<float> **image_slot, float4 pixels) noexcept
+        : _image_slot{image_slot},
+          _pixels{pixels} {}
+
+    [[nodiscard]] luisa::unique_ptr<Yutrel::Texture::Instance> build(
+        Yutrel::Renderer &renderer,
+        Yutrel::CommandBuffer &command_buffer) const noexcept override {
+        auto image = renderer.create<Image<float>>(PixelStorage::FLOAT4, make_uint2(1u));
+        if (_image_slot != nullptr) {
+            *_image_slot = image;
+        }
+        command_buffer << image->copy_from(luisa::span<const float4>{&_pixels, 1u}) << commit();
+        auto texture_id = renderer.register_bindless(
+            *image,
+            Yutrel::TextureSampler::point_edge());
+        return luisa::make_unique<Instance>(renderer, this, texture_id);
+    }
+
+    [[nodiscard]] uint channels() const noexcept override { return 4u; }
+    [[nodiscard]] uint2 resolution() const noexcept override { return make_uint2(1u); }
+};
+
+class UnityMaterialParamTextureSpec final : public Yutrel::TextureSpec {
+private:
+    Image<float> **_image_slot;
+    float4 _pixels;
+
+public:
+    UnityMaterialParamTextureSpec(Image<float> **image_slot, float4 pixels) noexcept
+        : _image_slot{image_slot},
+          _pixels{pixels} {}
+
+    [[nodiscard]] luisa::optional<luisa::string> validate() const noexcept override {
+        return luisa::nullopt;
+    }
+
+    [[nodiscard]] const Yutrel::Texture *build(
+        Yutrel::SceneBuilder &builder) const noexcept override {
+        return builder.emplace<Yutrel::Texture, UnityMaterialParamTexture>(
+            _image_slot,
+            _pixels);
+    }
+};
+
+// Per-material set of 9 updatable 1x1 parameter images (index order matches
+// OpenPBRMaterialData fields: base_weight, base_color, base_metalness,
+// base_diffuse_roughness, specular_weight, specular_color, specular_roughness,
+// specular_roughness_anisotropy, specular_ior). `images` are raw pointers to
+// renderer-owned device resources, published during scene build; `staging` is
+// persistent host memory used as the copy_from source for material updates.
+struct MaterialTextureSet {
+    std::array<Image<float> *, 9u> images{};
+    std::array<float4, 9u> staging{};
+};
+
+// luisa::unordered_map is ankerl::unordered_dense::map, a FLAT dense hash
+// map whose contiguous storage reallocates on rehash, which would move any
+// by-value MaterialTextureSet out from under the `&set->images[i]` pointers
+// captured by the texture specs during create_scene (multi-material scenes).
+// Owning each set through a unique_ptr keeps the pointed-to set (and thus the
+// captured slot addresses) stable for the lifetime of the SceneRuntime.
+using MaterialTextureRegistry = luisa::unordered_map<uint64_t, luisa::unique_ptr<MaterialTextureSet>>;
+
 [[nodiscard]] luisa::unique_ptr<Yutrel::Scene> create_scene(
     const DesiredScene &snapshot,
     const Yutrel::ExternalCameraState &camera,
-    luisa::vector<uint64_t> &instance_ids) {
+    luisa::vector<uint64_t> &instance_ids,
+    MaterialTextureRegistry &material_textures) {
     using namespace Yutrel;
 
     SceneSpecBuilder builder;
@@ -637,20 +763,33 @@ public:
                     source,
                     make_float4(values[0], values[1], values[2], 1.0f));
             };
+            // Updatable 1x1 bindless parameter textures, one slot per OpenPBR
+            // parameter. The registry slot receives the device image handle
+            // during scene build so that later material edits can `copy_from`
+            // new values without re-tracing or recompiling the kernel.
+            auto material_texture = [&](uint32_t param_index, float4 value) {
+                auto &set = material_textures[submesh.material_id];
+                if (set == nullptr) {
+                    set = luisa::make_unique<MaterialTextureSet>();
+                }
+                return builder.add_anonymous_texture<UnityMaterialParamTextureSpec>(
+                    source,
+                    &set->images[param_index],
+                    value);
+            };
             auto &&material = submesh.openpbr;
             auto surface = builder.add_anonymous_surface<OpenPBRSurfaceSpec>(
                 source,
                 OpenPBRSurfaceParams{
-                    .base_weight = constant_scalar(material.base_weight),
-                    .base_color = constant_color(material.base_color),
-                    .base_metalness = constant_scalar(material.base_metalness),
-                    .base_diffuse_roughness = constant_scalar(material.base_diffuse_roughness),
-                    .specular_weight = constant_scalar(material.specular_weight),
-                    .specular_color = constant_color(material.specular_color),
-                    .specular_roughness = constant_scalar(material.specular_roughness),
-                    .specular_roughness_anisotropy =
-                        constant_scalar(material.specular_roughness_anisotropy),
-                    .specular_ior = constant_scalar(material.specular_ior),
+                    .base_weight = material_texture(0u, make_float4(material.base_weight, 0.0f, 0.0f, 0.0f)),
+                    .base_color = material_texture(1u, make_float4(material.base_color[0], material.base_color[1], material.base_color[2], 1.0f)),
+                    .base_metalness = material_texture(2u, make_float4(material.base_metalness, 0.0f, 0.0f, 0.0f)),
+                    .base_diffuse_roughness = material_texture(3u, make_float4(material.base_diffuse_roughness, 0.0f, 0.0f, 0.0f)),
+                    .specular_weight = material_texture(4u, make_float4(material.specular_weight, 0.0f, 0.0f, 0.0f)),
+                    .specular_color = material_texture(5u, make_float4(material.specular_color[0], material.specular_color[1], material.specular_color[2], 1.0f)),
+                    .specular_roughness = material_texture(6u, make_float4(material.specular_roughness, 0.0f, 0.0f, 0.0f)),
+                    .specular_roughness_anisotropy = material_texture(7u, make_float4(material.specular_roughness_anisotropy, 0.0f, 0.0f, 0.0f)),
+                    .specular_ior = material_texture(8u, make_float4(material.specular_ior, 0.0f, 0.0f, 0.0f)),
                     .two_sided = submesh.double_sided,
                 });
             material_surfaces.emplace(submesh.material_id, surface);
@@ -735,11 +874,13 @@ private:
     struct SceneRuntime {
         struct AppliedMesh {
             uint64_t geometry_revision;
+            uint64_t material_revision;
             float4x4 local_to_world;
         };
 
         luisa::unique_ptr<Yutrel::Scene> scene;
         luisa::unique_ptr<Yutrel::Renderer> renderer;
+        luisa::unique_ptr<MaterialTextureRegistry> material_textures;
         luisa::vector<luisa::unique_ptr<Yutrel::InlineMesh>> dynamic_shapes;
         luisa::unordered_map<uint64_t, AppliedMesh> applied_meshes;
         luisa::unordered_map<uint32_t, ViewRuntime> views;
@@ -843,6 +984,8 @@ public:
         try {
             if ((data.mesh_count != 0u && data.meshes == nullptr) ||
                 data.mesh_struct_size != sizeof(SceneMeshDelta) ||
+                (data.material_update_count != 0u && data.material_updates == nullptr) ||
+                data.material_update_struct_size != sizeof(SceneMaterialUpdateData) ||
                 data.light_changed > 1u) {
                 return 1;
             }
@@ -883,6 +1026,20 @@ public:
                 deltas.emplace_back(std::move(delta));
             }
 
+            // Validate material-only updates against the current desired scene
+            // before mutating anything.
+            for (auto i = 0u; i < data.material_update_count; i++) {
+                auto &update = data.material_updates[i];
+                auto mesh_iter = _desired_scene.meshes.find(update.mesh_id);
+                if (mesh_iter == _desired_scene.meshes.end() ||
+                    update.submesh_index >= mesh_iter->second.submeshes.size() ||
+                    !mesh_iter->second.submeshes[update.submesh_index].has_openpbr() ||
+                    update.material_id == 0u || update.double_sided > 1u ||
+                    !valid_openpbr(update.openpbr)) {
+                    return 1;
+                }
+            }
+
             auto light = luisa::optional<Yutrel::ExternalDirectionalLightState>{};
             if (data.light_changed != 0u) {
                 light = copy_light(data.light);
@@ -917,6 +1074,18 @@ public:
             }
             if (light) {
                 _desired_scene.light = *light;
+            }
+            // Apply material-only updates: parameters, double_sided and the
+            // material identity on the referenced submesh. geometry_revision is
+            // intentionally left untouched so no scene rebuild is triggered.
+            for (auto i = 0u; i < data.material_update_count; i++) {
+                auto &update = data.material_updates[i];
+                auto &mesh = _desired_scene.meshes.at(update.mesh_id);
+                auto &submesh = mesh.submeshes[update.submesh_index];
+                submesh.material_id = update.material_id;
+                submesh.double_sided = update.double_sided != 0u;
+                submesh.openpbr = update.openpbr;
+                mesh.material_revision = data.revision;
             }
             _desired_scene.revision = data.revision;
             return 0;
@@ -1019,9 +1188,18 @@ private:
         }
 
         auto runtime = luisa::make_unique<SceneRuntime>();
+        runtime->material_textures = luisa::make_unique<MaterialTextureRegistry>();
         luisa::vector<uint64_t> instance_ids;
         runtime->requires_static_scene = _desired_scene.requires_static_scene();
-        runtime->scene = create_scene(_desired_scene, camera, instance_ids);
+        {
+            Clock clock_scene;
+            runtime->scene = create_scene(
+                _desired_scene,
+                camera,
+                instance_ids,
+                *runtime->material_textures);
+            LUISA_INFO("Unity scene created in {} ms.", clock_scene.toc());
+        }
         if (runtime->scene == nullptr) {
             report_path_error_once(path_error_scene, "Failed to create the Unity Yutrel scene.");
             return false;
@@ -1031,7 +1209,11 @@ private:
             report_path_error_once(path_error_scene, "Unity Yutrel scene did not create the required Hero spectrum.");
             return false;
         }
-        runtime->renderer = Yutrel::Renderer::create(_device, _stream, *runtime->scene);
+        {
+            Clock clock_renderer;
+            runtime->renderer = Yutrel::Renderer::create(_device, _stream, *runtime->scene);
+            LUISA_INFO("Unity renderer created in {} ms.", clock_renderer.toc());
+        }
         if (runtime->renderer == nullptr) {
             report_path_error_once(path_error_scene, "Failed to create the Unity Path Tracing renderer.");
             return false;
@@ -1055,13 +1237,18 @@ private:
             return false;
         }
         commands << synchronize();
-        if (!runtime->renderer->prepare_external_render()) {
-            report_path_error_once(path_error_scene, "Failed to compile the Unity Path Tracing renderer.");
-            return false;
+        {
+            Clock clock_compile;
+            if (!runtime->renderer->prepare_external_render()) {
+                report_path_error_once(path_error_scene, "Failed to compile the Unity Path Tracing renderer.");
+                return false;
+            }
+            LUISA_INFO("Unity external render compiled in {} ms.", clock_compile.toc());
         }
         for (auto &[id, mesh] : _desired_scene.meshes) {
             runtime->applied_meshes.emplace(id, SceneRuntime::AppliedMesh{
                 .geometry_revision = mesh.geometry_revision,
+                .material_revision = mesh.material_revision,
                 .local_to_world = mesh.local_to_world,
             });
         }
@@ -1143,10 +1330,24 @@ private:
         for (auto &shape : new_shapes) {
             runtime.dynamic_shapes.emplace_back(std::move(shape));
         }
-        runtime.applied_meshes.clear();
+        // Rebuild the applied-mesh bookkeeping. The previous material_revision
+        // is preserved as the comparison baseline for apply_material_updates,
+        // which runs right after this method; otherwise a material-only delta
+        // would be considered already-applied and its texture upload skipped.
+        // NOTE: do NOT clear() the map before the move; the move transfers the
+        // old bookkeeping (including material_revision baselines) out and
+        // leaves the source map empty (ankerl move ctor clears m_values), so
+        // the previous revisions survive here and material-only deltas are
+        // still recognized as pending by apply_material_updates.
+        auto previous_applied = std::move(runtime.applied_meshes);
         for (auto &[id, mesh] : _desired_scene.meshes) {
+            auto previous = previous_applied.find(id);
+            auto material_revision = previous != previous_applied.end()
+                                         ? previous->second.material_revision
+                                         : mesh.material_revision;
             runtime.applied_meshes.emplace(id, SceneRuntime::AppliedMesh{
                 .geometry_revision = mesh.geometry_revision,
+                .material_revision = material_revision,
                 .local_to_world = mesh.local_to_world,
             });
         }
@@ -1159,6 +1360,58 @@ private:
             view.sample_index = 0u;
         }
         return true;
+    }
+
+    // Upload updated OpenPBR parameter values into the per-material 1x1
+    // bindless images. This runs after apply_scene_updates so the applied-mesh
+    // bookkeeping (which is rebuilt there) is current. Material edits never
+    // touch geometry_revision, so they never trigger a scene rebuild or a
+    // kernel recompile; the accumulation clear is already handled by
+    // apply_scene_updates because the scene revision changed.
+    void apply_material_updates(
+        SceneRuntime &runtime,
+        Yutrel::CommandBuffer &commands) {
+        if (runtime.material_textures == nullptr) {
+            return;
+        }
+        luisa::unordered_map<uint64_t, const OpenPBRMaterialData *> pending;
+        for (auto &[id, mesh] : _desired_scene.meshes) {
+            auto applied = runtime.applied_meshes.find(id);
+            if (applied == runtime.applied_meshes.end() ||
+                applied->second.material_revision == mesh.material_revision) {
+                continue;
+            }
+            for (auto &submesh : mesh.submeshes) {
+                if (submesh.has_openpbr()) {
+                    pending.try_emplace(submesh.material_id, &submesh.openpbr);
+                }
+            }
+            applied->second.material_revision = mesh.material_revision;
+        }
+        for (auto &[material_id, params] : pending) {
+            auto iter = runtime.material_textures->find(material_id);
+            if (iter == runtime.material_textures->end() || iter->second == nullptr) {
+                continue;
+            }
+            auto &set = *iter->second;
+            set.staging[0u] = make_float4(params->base_weight, 0.0f, 0.0f, 0.0f);
+            set.staging[1u] = make_float4(
+                params->base_color[0], params->base_color[1], params->base_color[2], 1.0f);
+            set.staging[2u] = make_float4(params->base_metalness, 0.0f, 0.0f, 0.0f);
+            set.staging[3u] = make_float4(params->base_diffuse_roughness, 0.0f, 0.0f, 0.0f);
+            set.staging[4u] = make_float4(params->specular_weight, 0.0f, 0.0f, 0.0f);
+            set.staging[5u] = make_float4(
+                params->specular_color[0], params->specular_color[1], params->specular_color[2], 1.0f);
+            set.staging[6u] = make_float4(params->specular_roughness, 0.0f, 0.0f, 0.0f);
+            set.staging[7u] = make_float4(params->specular_roughness_anisotropy, 0.0f, 0.0f, 0.0f);
+            set.staging[8u] = make_float4(params->specular_ior, 0.0f, 0.0f, 0.0f);
+            for (auto k = 0u; k < 9u; k++) {
+                if (set.images[k] != nullptr) {
+                    commands << set.images[k]->copy_from(
+                        luisa::span<const float4>{&set.staging[k], 1u});
+                }
+            }
+        }
     }
 
     [[nodiscard]] bool render_path(
@@ -1202,6 +1455,11 @@ private:
             report_path_error_once(path_error_runtime, "Failed to apply a Unity scene update.");
             return false;
         }
+        // Upload material parameter edits into the 1x1 bindless images. This
+        // does not rebuild the scene or recompile the kernel: only the image
+        // contents change, and apply_scene_updates already restarted the
+        // accumulation because the scene revision changed.
+        apply_material_updates(runtime, commands);
         auto &view = runtime.view(data.view_id);
         auto resolution_changed = !view.accumulation ||
                                   view.accumulation.size().x != camera.resolution.x ||

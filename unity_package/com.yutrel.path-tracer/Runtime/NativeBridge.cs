@@ -9,7 +9,7 @@ namespace Yutrel.PathTracer
     internal static class NativeBridge
     {
         private const string LibraryName = "YutrelUnityPlugin";
-        private const uint AbiVersion = 7;
+        private const uint AbiVersion = 8;
         private const int ClearEventId = 0;
         private const int PathTraceEventId = 1;
 
@@ -106,6 +106,16 @@ namespace Yutrel.PathTracer
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        private unsafe struct SceneMaterialUpdateData
+        {
+            public ulong meshId;
+            public uint subMeshIndex;
+            public ulong materialId;
+            public uint doubleSided;
+            public OpenPBRMaterialAbi openPbr;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         private unsafe struct SceneDeltaData
         {
             public uint abiVersion;
@@ -116,6 +126,9 @@ namespace Yutrel.PathTracer
             public uint meshStructSize;
             public DirectionalLightData light;
             public uint lightChanged;
+            public IntPtr materialUpdates;
+            public uint materialUpdateCount;
+            public uint materialUpdateStructSize;
         }
 
         internal readonly struct SceneMeshUpdate
@@ -242,6 +255,29 @@ namespace Yutrel.PathTracer
                 this.uvOffset = uvOffset;
                 this.materialId = materialId;
                 this.materialType = materialType;
+                this.openPbr = openPbr;
+            }
+        }
+
+        internal readonly struct SceneMaterialUpdate
+        {
+            internal readonly ulong meshId;
+            internal readonly uint subMeshIndex;
+            internal readonly ulong materialId;
+            internal readonly bool doubleSided;
+            internal readonly OpenPBRMaterialData openPbr;
+
+            internal SceneMaterialUpdate(
+                ulong meshId,
+                uint subMeshIndex,
+                ulong materialId,
+                bool doubleSided,
+                OpenPBRMaterialData openPbr)
+            {
+                this.meshId = meshId;
+                this.subMeshIndex = subMeshIndex;
+                this.materialId = materialId;
+                this.doubleSided = doubleSided;
                 this.openPbr = openPbr;
             }
         }
@@ -374,11 +410,13 @@ namespace Yutrel.PathTracer
 
         internal static unsafe bool SubmitSceneDelta(
             IReadOnlyList<SceneMeshUpdate> meshes,
+            IReadOnlyList<SceneMaterialUpdate> materialUpdates,
             ulong revision,
             DirectionalLightUpdate? lightUpdate)
         {
 #if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
-            if (sizeof(OpenPBRMaterialAbi) != 52 || sizeof(SceneSubMeshData) != 128)
+            if (sizeof(OpenPBRMaterialAbi) != 52 || sizeof(SceneSubMeshData) != 128 ||
+                sizeof(SceneMaterialUpdateData) != 80)
             {
                 ReportErrorOnce("Yutrel OpenPBR material ABI layout is invalid.");
                 return false;
@@ -496,6 +534,42 @@ namespace Yutrel.PathTracer
                     descriptors[meshIndex] = descriptor;
                 }
 
+                var materialDescriptors =
+                    new SceneMaterialUpdateData[materialUpdates?.Count ?? 0];
+                for (var i = 0; i < materialDescriptors.Length; i++)
+                {
+                    var update = materialUpdates[i];
+                    var descriptor = new SceneMaterialUpdateData
+                    {
+                        meshId = update.meshId,
+                        subMeshIndex = update.subMeshIndex,
+                        materialId = update.materialId,
+                        doubleSided = update.doubleSided ? 1u : 0u
+                    };
+                    descriptor.openPbr.baseWeight = update.openPbr.baseWeight;
+                    descriptor.openPbr.baseColor[0] = update.openPbr.baseColor.x;
+                    descriptor.openPbr.baseColor[1] = update.openPbr.baseColor.y;
+                    descriptor.openPbr.baseColor[2] = update.openPbr.baseColor.z;
+                    descriptor.openPbr.baseMetalness = update.openPbr.baseMetalness;
+                    descriptor.openPbr.baseDiffuseRoughness =
+                        update.openPbr.baseDiffuseRoughness;
+                    descriptor.openPbr.specularWeight = update.openPbr.specularWeight;
+                    descriptor.openPbr.specularColor[0] = update.openPbr.specularColor.x;
+                    descriptor.openPbr.specularColor[1] = update.openPbr.specularColor.y;
+                    descriptor.openPbr.specularColor[2] = update.openPbr.specularColor.z;
+                    descriptor.openPbr.specularRoughness = update.openPbr.specularRoughness;
+                    descriptor.openPbr.specularRoughnessAnisotropy =
+                        update.openPbr.specularRoughnessAnisotropy;
+                    descriptor.openPbr.specularIor = update.openPbr.specularIor;
+                    materialDescriptors[i] = descriptor;
+                }
+                GCHandle materialHandle = default;
+                if (materialDescriptors.Length > 0)
+                {
+                    materialHandle = GCHandle.Alloc(materialDescriptors, GCHandleType.Pinned);
+                    pinnedArrays.Add(materialHandle);
+                }
+
                 fixed (SceneMeshDelta* meshPointer = descriptors)
                 {
                     var data = new SceneDeltaData
@@ -506,6 +580,11 @@ namespace Yutrel.PathTracer
                         meshes = (IntPtr)meshPointer,
                         meshCount = (uint)descriptors.Length,
                         meshStructSize = (uint)sizeof(SceneMeshDelta),
+                        materialUpdates = materialDescriptors.Length > 0
+                            ? materialHandle.AddrOfPinnedObject()
+                            : IntPtr.Zero,
+                        materialUpdateCount = (uint)materialDescriptors.Length,
+                        materialUpdateStructSize = (uint)sizeof(SceneMaterialUpdateData),
                         lightChanged = lightUpdate.HasValue ? 1u : 0u
                     };
                     if (lightUpdate.HasValue)

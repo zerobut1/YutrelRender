@@ -126,13 +126,30 @@ namespace Yutrel.PathTracer
                 internal MeshRenderer renderer;
                 internal ulong sharedMeshId;
                 internal int materialSignature;
+                internal SubMeshMaterialState[] subMeshStates;
                 internal Matrix4x4 localToWorld;
+            }
+
+            // Per-submesh snapshot of everything the renderer consumes from a
+            // Material. `restHash` covers all properties except the OpenPBR
+            // parameters; `paramsHash` covers the 9 OpenPBR parameters. When a
+            // scan finds only `paramsHash` changes, the change can be shipped as
+            // a lightweight material-only update (no vertex re-upload, no scene
+            // rebuild, no kernel recompile).
+            private struct SubMeshMaterialState
+            {
+                internal ulong materialId;
+                internal NativeBridge.SceneMaterialType materialType;
+                internal bool doubleSided;
+                internal int restHash;
+                internal int paramsHash;
             }
 
             private readonly Dictionary<ulong, TrackedMesh> meshes = new();
             private readonly HashSet<ulong> seenMeshIds = new();
             private readonly List<ulong> removedMeshIds = new();
             private readonly List<NativeBridge.SceneMeshUpdate> pendingUpdates = new();
+            private readonly List<NativeBridge.SceneMaterialUpdate> pendingMaterialUpdates = new();
             private readonly List<Material> sharedMaterials = new();
 
             private Light selectedLight;
@@ -160,11 +177,13 @@ namespace Yutrel.PathTracer
 #endif
                 meshes.Clear();
                 pendingUpdates.Clear();
+                pendingMaterialUpdates.Clear();
             }
 
             internal bool Synchronize()
             {
                 pendingUpdates.Clear();
+                pendingMaterialUpdates.Clear();
                 var now = Time.realtimeSinceStartupAsDouble;
                 // Scan periodically in both Play and Edit mode so that material
                 // parameter changes always become visible without relying on
@@ -184,7 +203,7 @@ namespace Yutrel.PathTracer
                 CompareTransforms();
                 var light = CurrentLightState();
                 var lightChanged = !previousLightValid || !LightNear(previousLight, light);
-                if (pendingUpdates.Count == 0 && !lightChanged)
+                if (pendingUpdates.Count == 0 && pendingMaterialUpdates.Count == 0 && !lightChanged)
                 {
                     return true;
                 }
@@ -192,6 +211,7 @@ namespace Yutrel.PathTracer
                 revision++;
                 if (!NativeBridge.SubmitSceneDelta(
                         pendingUpdates,
+                        pendingMaterialUpdates,
                         revision,
                         lightChanged ? light : null))
                 {
@@ -235,6 +255,31 @@ namespace Yutrel.PathTracer
                         continue;
                     }
 
+                    // When only OpenPBR parameter values changed (geometry and
+                    // every other material property unchanged), ship lightweight
+                    // material-only updates instead of re-uploading all vertices:
+                    // the native plugin uploads new values into 1x1 bindless
+                    // parameter images without rebuilding the scene or
+                    // recompiling the kernel.
+                    List<NativeBridge.SceneMaterialUpdate> materialUpdates = null;
+                    var materialOnly = tracked != null &&
+                                       tracked.sharedMeshId == sharedMeshId &&
+                                       TryBuildMaterialUpdates(
+                                           filter,
+                                           objectId,
+                                           tracked,
+                                           out materialUpdates);
+                    if (materialOnly)
+                    {
+                        pendingMaterialUpdates.AddRange(materialUpdates);
+                        tracked.filter = filter;
+                        tracked.renderer = meshRenderer;
+                        tracked.materialSignature = materialSignature;
+                        tracked.localToWorld = filter.transform.localToWorldMatrix;
+                        seenMeshIds.Add(objectId);
+                        continue;
+                    }
+
                     if (!TryCreateMeshUpdate(filter, out var update))
                     {
                         continue;
@@ -250,6 +295,7 @@ namespace Yutrel.PathTracer
                     tracked.renderer = meshRenderer;
                     tracked.sharedMeshId = sharedMeshId;
                     tracked.materialSignature = materialSignature;
+                    tracked.subMeshStates = ComputeSubMeshMaterialStates(filter);
                     tracked.localToWorld = localToWorld;
                     seenMeshIds.Add(objectId);
                 }
@@ -708,6 +754,170 @@ namespace Yutrel.PathTracer
                     }
                     return hash;
                 }
+            }
+
+            private static bool TryReadSubMeshMaterialState(
+                Material material,
+                out SubMeshMaterialState state)
+            {
+                state = default;
+                var materialId = material != null
+                    ? EntityId.ToULong(material.GetEntityId())
+                    : 0ul;
+                var doubleSided = material != null &&
+                                  (material.doubleSidedGI ||
+                                   material.HasProperty(CullModeProperty) &&
+                                   Mathf.RoundToInt(material.GetFloat(CullModeProperty)) ==
+                                   (int)CullMode.Off);
+                var isOpenPbr = OpenPBRMaterialAdapter.IsOpenPBR(material);
+                var materialType = isOpenPbr
+                    ? NativeBridge.SceneMaterialType.OpenPBR
+                    : NativeBridge.SceneMaterialType.FallbackDiffuse;
+                var paramsHash = 0;
+                if (isOpenPbr && OpenPBRMaterialAdapter.TryRead(material, out _))
+                {
+                    paramsHash = OpenPBRMaterialAdapter.ComputeSignature(material);
+                }
+                unchecked
+                {
+                    var restHash = (int)materialId.GetHashCode();
+                    restHash = restHash * 397 ^ (int)materialType;
+                    restHash = restHash * 397 ^ (doubleSided ? 1 : 0);
+                    if (material != null)
+                    {
+                        if (material.HasProperty(EmissiveLuminanceProperty))
+                        {
+                            restHash = restHash * 397 ^
+                                       material.GetFloat(EmissiveLuminanceProperty).GetHashCode();
+                        }
+                        if (material.HasProperty(EmissiveColorProperty))
+                        {
+                            restHash = restHash * 397 ^
+                                       material.GetColor(EmissiveColorProperty).GetHashCode();
+                        }
+                        if (material.HasProperty(CullModeProperty))
+                        {
+                            restHash = restHash * 397 ^
+                                       material.GetFloat(CullModeProperty).GetHashCode();
+                        }
+                        var textureProperty = EmissiveTexturePropertyFor(material);
+                        if (textureProperty != null)
+                        {
+                            var texture = material.GetTexture(textureProperty);
+                            restHash = restHash * 397 ^ (texture != null
+                                ? EntityId.ToULong(texture.GetEntityId()).GetHashCode()
+                                : 0);
+                            if (texture != null)
+                            {
+                                restHash = restHash * 397 ^ texture.updateCount.GetHashCode();
+                                restHash = restHash * 397 ^
+                                           material.GetTextureScale(textureProperty).GetHashCode();
+                                restHash = restHash * 397 ^
+                                           material.GetTextureOffset(textureProperty).GetHashCode();
+                            }
+                        }
+                    }
+                    state = new SubMeshMaterialState
+                    {
+                        materialId = materialId,
+                        materialType = materialType,
+                        doubleSided = doubleSided,
+                        restHash = restHash,
+                        paramsHash = paramsHash
+                    };
+                }
+                return isOpenPbr;
+            }
+
+            private SubMeshMaterialState[] ComputeSubMeshMaterialStates(MeshFilter filter)
+            {
+                sharedMaterials.Clear();
+                filter.GetComponent<MeshRenderer>().GetSharedMaterials(sharedMaterials);
+                var states = new SubMeshMaterialState[filter.sharedMesh.subMeshCount];
+                for (var subMesh = 0; subMesh < states.Length; subMesh++)
+                {
+                    var material = subMesh < sharedMaterials.Count
+                        ? sharedMaterials[subMesh]
+                        : null;
+                    TryReadSubMeshMaterialState(material, out states[subMesh]);
+                }
+                return states;
+            }
+
+            // Returns true and fills `updates` when the only change vs. the
+            // tracked snapshot is OpenPBR parameter values on (a subset of)
+            // submeshes. Any change to geometry identity, material identity,
+            // material type, double-sidedness, emissive or texture properties
+            // falls back to a full mesh update.
+            private bool TryBuildMaterialUpdates(
+                MeshFilter filter,
+                ulong meshId,
+                TrackedMesh tracked,
+                out List<NativeBridge.SceneMaterialUpdate> updates)
+            {
+                updates = null;
+                var states = ComputeSubMeshMaterialStates(filter);
+                if (tracked.subMeshStates == null ||
+                    states.Length != tracked.subMeshStates.Length)
+                {
+                    return false;
+                }
+                for (var i = 0; i < states.Length; i++)
+                {
+                    var previous = tracked.subMeshStates[i];
+                    var current = states[i];
+                    if (previous.restHash != current.restHash ||
+                        previous.materialId != current.materialId ||
+                        previous.materialType != current.materialType ||
+                        previous.doubleSided != current.doubleSided)
+                    {
+                        return false;
+                    }
+                }
+                var anyParamChanged = false;
+                for (var i = 0; i < states.Length; i++)
+                {
+                    if (tracked.subMeshStates[i].paramsHash != states[i].paramsHash)
+                    {
+                        anyParamChanged = true;
+                        break;
+                    }
+                }
+                if (!anyParamChanged)
+                {
+                    return false;
+                }
+
+                sharedMaterials.Clear();
+                filter.GetComponent<MeshRenderer>().GetSharedMaterials(sharedMaterials);
+                updates = new List<NativeBridge.SceneMaterialUpdate>();
+                for (var i = 0; i < states.Length; i++)
+                {
+                    if (states[i].materialType != NativeBridge.SceneMaterialType.OpenPBR)
+                    {
+                        continue;
+                    }
+                    var material = i < sharedMaterials.Count ? sharedMaterials[i] : null;
+                    if (material == null ||
+                        !OpenPBRMaterialAdapter.TryRead(material, out var data))
+                    {
+                        updates = null;
+                        return false;
+                    }
+                    updates.Add(new NativeBridge.SceneMaterialUpdate(
+                        meshId,
+                        (uint)i,
+                        states[i].materialId,
+                        states[i].doubleSided,
+                        data));
+                }
+                if (updates.Count == 0)
+                {
+                    updates = null;
+                    return false;
+                }
+                tracked.subMeshStates = states;
+                return true;
             }
 
             private static bool IsValidTransform(Matrix4x4 matrix)
