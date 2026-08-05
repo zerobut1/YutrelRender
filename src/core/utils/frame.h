@@ -21,6 +21,7 @@ public:
     [[nodiscard]] Frame flipped(Expr<bool> flip) const noexcept;
     [[nodiscard]] static Frame make(Expr<float3> n) noexcept;
     [[nodiscard]] static Frame make(Expr<float3> n, Expr<float3> s) noexcept;
+    [[nodiscard]] static Frame make(Expr<float3> n, Expr<float3> s, Expr<float3> t) noexcept;
     [[nodiscard]] Float3 local_to_world(Expr<float3> d) const noexcept;
     [[nodiscard]] Float3 world_to_local(Expr<float3> d) const noexcept;
     [[nodiscard]] Expr<float3> s() const noexcept { return m_s; }

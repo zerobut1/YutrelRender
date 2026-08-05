@@ -45,7 +45,7 @@ namespace yutrel::unity {
 using namespace luisa;
 using namespace luisa::compute;
 
-constexpr uint32_t abi_version = 8u;
+constexpr uint32_t abi_version = 9u;
 constexpr int clear_event_id = 0;
 constexpr int path_trace_event_id = 1;
 constexpr size_t external_instance_capacity = 4096u;
@@ -84,6 +84,23 @@ struct OpenPBRMaterialData {
     float specular_ior;
 };
 
+// One OpenPBR texture slot: nullable image upload with its own encoding and
+// UV transform. `pixels` is an RGBA float array of width*height entries,
+// or nullptr when the slot is unused (the parameter then falls back to the
+// constant in OpenPBRMaterialData). The slots are:
+//   0 = base_color (sRGB-encoded in Unity), 1 = normal (linear),
+//   2 = specular_roughness (linear; Unity smoothness already inverted on
+//       the host side, see YutrelPathTracer.cs), 3 = base_metalness (linear),
+//   4 = material_ao (linear; uploaded but not applied by the renderer yet).
+struct OpenPBRTextureSlotData {
+    const float *pixels;
+    uint32_t width;
+    uint32_t height;
+    ExternalTextureEncoding encoding;
+    float uv_scale[2];
+    float uv_offset[2];
+};
+
 struct SceneSubMeshData {
     uint32_t index_offset;
     uint32_t index_count;
@@ -99,6 +116,11 @@ struct SceneSubMeshData {
     uint64_t material_id;
     SceneMaterialType material_type;
     OpenPBRMaterialData openpbr;
+    OpenPBRTextureSlotData base_color;
+    OpenPBRTextureSlotData normal;
+    OpenPBRTextureSlotData specular_roughness;
+    OpenPBRTextureSlotData base_metalness;
+    OpenPBRTextureSlotData material_ao;
 };
 
 struct SceneMeshDelta {
@@ -118,7 +140,8 @@ struct SceneMeshDelta {
 };
 
 static_assert(sizeof(OpenPBRMaterialData) == 52u);
-static_assert(sizeof(SceneSubMeshData) == 128u);
+static_assert(sizeof(OpenPBRTextureSlotData) == 40u);
+static_assert(sizeof(SceneSubMeshData) == 328u);
 static_assert(sizeof(SceneMeshDelta) == 136u);
 
 struct DirectionalLightData {
@@ -220,6 +243,24 @@ struct MeshSnapshot {
         uint64_t material_id;
         SceneMaterialType material_type;
         OpenPBRMaterialData openpbr;
+
+        // OpenPBR texture slots (same index order as OpenPBRTextureSlotData).
+        struct Slot {
+            luisa::vector<float4> pixels;
+            uint2 size;
+            ExternalTextureEncoding encoding;
+            float2 uv_scale;
+            float2 uv_offset;
+
+            [[nodiscard]] bool has_texture() const noexcept {
+                return size.x != 0u || size.y != 0u;
+            }
+        };
+        Slot base_color;
+        Slot normal;
+        Slot specular_roughness;
+        Slot base_metalness;
+        Slot material_ao;
 
         [[nodiscard]] bool emissive() const noexcept {
             return emissive_luminance_nits > 0.0f && any(emissive_color > 0.0f);
@@ -325,6 +366,49 @@ struct DesiredScene {
            material.specular_roughness_anisotropy <= 1.0f &&
            std::isfinite(material.specular_ior) &&
            material.specular_ior > 0.0f;
+}
+
+// Validates and copies one OpenPBR texture slot from the ABI data into the
+// snapshot. Mirrors the emissive slot rules: a slot either has a full RGBA
+// image (non-zero size, non-null pixels, mesh UVs required) or is empty
+// (zero size, null pixels).
+[[nodiscard]] bool copy_texture_slot(
+    const OpenPBRTextureSlotData &source,
+    const luisa::vector<float2> &uvs,
+    MeshSnapshot::SubMesh::Slot &slot) noexcept {
+    auto size = make_uint2(source.width, source.height);
+    auto pixel_count = static_cast<uint64_t>(size.x) * size.y;
+    auto has_texture = size.x != 0u || size.y != 0u;
+    if (source.encoding > ExternalTextureEncoding::srgb ||
+        (has_texture && (size.x == 0u || size.y == 0u ||
+                         source.pixels == nullptr || uvs.empty())) ||
+        (!has_texture && source.pixels != nullptr) ||
+        pixel_count > std::numeric_limits<uint32_t>::max() ||
+        !std::isfinite(source.uv_scale[0]) || !std::isfinite(source.uv_scale[1]) ||
+        !std::isfinite(source.uv_offset[0]) || !std::isfinite(source.uv_offset[1])) {
+        return false;
+    }
+    slot.size = size;
+    slot.encoding = source.encoding;
+    slot.uv_scale = make_float2(source.uv_scale[0], source.uv_scale[1]);
+    slot.uv_offset = make_float2(source.uv_offset[0], source.uv_offset[1]);
+    if (has_texture) {
+        slot.pixels.reserve(pixel_count);
+        for (auto pixel_index = 0ull; pixel_index < pixel_count; pixel_index++) {
+            auto pixel = make_float4(
+                source.pixels[pixel_index * 4u],
+                source.pixels[pixel_index * 4u + 1u],
+                source.pixels[pixel_index * 4u + 2u],
+                source.pixels[pixel_index * 4u + 3u]);
+            if (!std::isfinite(pixel.x) || !std::isfinite(pixel.y) ||
+                !std::isfinite(pixel.z) || !std::isfinite(pixel.w) ||
+                any(pixel < 0.0f)) {
+                return false;
+            }
+            slot.pixels.emplace_back(pixel);
+        }
+    }
+    return true;
 }
 
 [[nodiscard]] bool copy_mesh(
@@ -446,6 +530,13 @@ struct DesiredScene {
                 return false;
             }
             submesh.emissive_pixels.emplace_back(pixel);
+        }
+        if (!copy_texture_slot(source.base_color, mesh.uvs, submesh.base_color) ||
+            !copy_texture_slot(source.normal, mesh.uvs, submesh.normal) ||
+            !copy_texture_slot(source.specular_roughness, mesh.uvs, submesh.specular_roughness) ||
+            !copy_texture_slot(source.base_metalness, mesh.uvs, submesh.base_metalness) ||
+            !copy_texture_slot(source.material_ao, mesh.uvs, submesh.material_ao)) {
+            return false;
         }
         mesh.submeshes.emplace_back(std::move(submesh));
         expected_index_offset += source.index_count;
@@ -777,19 +868,48 @@ using MaterialTextureRegistry = luisa::unordered_map<uint64_t, luisa::unique_ptr
                     &set->images[param_index],
                     value);
             };
+            // Picks a real image texture when the slot carries one, otherwise
+            // falls back to the updatable 1x1 parameter texture holding the
+            // constant from OpenPBRMaterialData.
+            auto texture_slot = [&](uint32_t fallback_param_index,
+                                    const MeshSnapshot::SubMesh::Slot &slot,
+                                    float4 fallback_value) -> TextureRef {
+                if (slot.has_texture()) {
+                    return builder.add_anonymous_texture<UnityImageTextureSpec>(
+                        source, slot.pixels, slot.size, slot.encoding,
+                        slot.uv_scale, slot.uv_offset);
+                }
+                return material_texture(fallback_param_index, fallback_value);
+            };
+            // The normal slot has no constant fallback: when absent it is left
+            // unset (geometric shading normal is used).
+            auto normal_texture = [&](const MeshSnapshot::SubMesh::Slot &slot)
+                -> luisa::optional<TextureRef> {
+                if (!slot.has_texture()) {
+                    return luisa::nullopt;
+                }
+                return builder.add_anonymous_texture<UnityImageTextureSpec>(
+                    source, slot.pixels, slot.size, slot.encoding,
+                    slot.uv_scale, slot.uv_offset);
+            };
             auto &&material = submesh.openpbr;
+            // NOTE: submesh.material_ao is uploaded by the host but is not
+            // applied here: OpenPBRSurface has no AO parameter (matches the
+            // YutrelRP deferred path, where material AO does not affect direct
+            // lighting). Revisit when the renderer gains AO support.
             auto surface = builder.add_anonymous_surface<OpenPBRSurfaceSpec>(
                 source,
                 OpenPBRSurfaceParams{
                     .base_weight = material_texture(0u, make_float4(material.base_weight, 0.0f, 0.0f, 0.0f)),
-                    .base_color = material_texture(1u, make_float4(material.base_color[0], material.base_color[1], material.base_color[2], 1.0f)),
-                    .base_metalness = material_texture(2u, make_float4(material.base_metalness, 0.0f, 0.0f, 0.0f)),
+                    .base_color = texture_slot(1u, submesh.base_color, make_float4(material.base_color[0], material.base_color[1], material.base_color[2], 1.0f)),
+                    .base_metalness = texture_slot(2u, submesh.base_metalness, make_float4(material.base_metalness, 0.0f, 0.0f, 0.0f)),
                     .base_diffuse_roughness = material_texture(3u, make_float4(material.base_diffuse_roughness, 0.0f, 0.0f, 0.0f)),
                     .specular_weight = material_texture(4u, make_float4(material.specular_weight, 0.0f, 0.0f, 0.0f)),
                     .specular_color = material_texture(5u, make_float4(material.specular_color[0], material.specular_color[1], material.specular_color[2], 1.0f)),
-                    .specular_roughness = material_texture(6u, make_float4(material.specular_roughness, 0.0f, 0.0f, 0.0f)),
+                    .specular_roughness = texture_slot(6u, submesh.specular_roughness, make_float4(material.specular_roughness, 0.0f, 0.0f, 0.0f)),
                     .specular_roughness_anisotropy = material_texture(7u, make_float4(material.specular_roughness_anisotropy, 0.0f, 0.0f, 0.0f)),
                     .specular_ior = material_texture(8u, make_float4(material.specular_ior, 0.0f, 0.0f, 0.0f)),
+                    .normal = normal_texture(submesh.normal),
                     .two_sided = submesh.double_sided,
                 });
             material_surfaces.emplace(submesh.material_id, surface);

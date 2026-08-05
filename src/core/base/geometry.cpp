@@ -495,7 +495,7 @@ luisa::shared_ptr<Interaction> Geometry::interaction(const Var<Ray> ray, const V
         uv                  = attr.uv;
         p_s                 = attr.ps;
         area                = attr.area;
-        shading             = Frame::make(attr.ns, attr.dpdu);
+        shading             = Frame::make(attr.ns, attr.dpdu, attr.dpdv);
         front_face          = dot(-ray->direction(), n_g) > 0.0f;
         inst_id             = hit.inst;
         prim_id             = hit.prim;

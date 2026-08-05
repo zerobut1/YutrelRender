@@ -279,6 +279,7 @@ OpenPBRSurface::OpenPBRSurface(const Texture* base_weight,
                                const Texture* specular_roughness,
                                const Texture* specular_roughness_anisotropy,
                                const Texture* specular_ior,
+                               const Texture* normal,
                                bool two_sided) noexcept
     : Surface{two_sided},
       m_base_weight{base_weight},
@@ -289,7 +290,8 @@ OpenPBRSurface::OpenPBRSurface(const Texture* base_weight,
       m_specular_color{specular_color},
       m_specular_roughness{specular_roughness},
       m_specular_roughness_anisotropy{specular_roughness_anisotropy},
-      m_specular_ior{specular_ior} {}
+      m_specular_ior{specular_ior},
+      m_normal{normal} {}
 
 luisa::unique_ptr<Surface::Instance> OpenPBRSurface::build(
     Renderer& renderer, CommandBuffer& command_buffer) const noexcept
@@ -317,6 +319,7 @@ luisa::unique_ptr<Surface::Instance> OpenPBRSurface::build(
         renderer.build_texture(command_buffer, m_specular_roughness),
         renderer.build_texture(command_buffer, m_specular_roughness_anisotropy),
         renderer.build_texture(command_buffer, m_specular_ior),
+        renderer.build_texture(command_buffer, m_normal),
         opaque_dielectric_energy_lut, opaque_dielectric_average_lut,
         ideal_metal_energy_lut, ideal_metal_average_lut);
 }
@@ -329,6 +332,7 @@ OpenPBRSurface::Instance::Instance(
     const Texture::Instance* specular_roughness,
     const Texture::Instance* specular_roughness_anisotropy,
     const Texture::Instance* specular_ior,
+    const Texture::Instance* normal,
     uint opaque_dielectric_energy_lut,
     uint opaque_dielectric_average_lut,
     uint ideal_metal_energy_lut,
@@ -340,6 +344,7 @@ OpenPBRSurface::Instance::Instance(
       m_specular_roughness{specular_roughness},
       m_specular_roughness_anisotropy{specular_roughness_anisotropy},
       m_specular_ior{specular_ior},
+      m_normal{normal},
       m_opaque_dielectric_energy_lut{opaque_dielectric_energy_lut},
       m_opaque_dielectric_average_lut{opaque_dielectric_average_lut},
       m_ideal_metal_energy_lut{ideal_metal_energy_lut},
@@ -363,15 +368,31 @@ void OpenPBRSurface::Instance::populate_closure(Surface::Closure* closure,
 {
     auto& swl = closure->swl();
     auto time = closure->time();
-    auto base_weight = clamp(evaluate_scalar(m_base_weight, it, time, 1.0f), 0.0f, 1.0f);
-    auto base_color = evaluate_color(m_base_color, it, swl, time, 0.8f);
-    auto metalness = clamp(evaluate_scalar(m_base_metalness, it, time, 0.0f), 0.0f, 1.0f);
-    auto diffuse_roughness = clamp(evaluate_scalar(m_base_diffuse_roughness, it, time, 0.0f), 0.0f, 1.0f);
-    auto specular_weight = max(evaluate_scalar(m_specular_weight, it, time, 1.0f), 0.0f);
-    auto specular_color = evaluate_color(m_specular_color, it, swl, time, 1.0f);
-    auto roughness = clamp(evaluate_scalar(m_specular_roughness, it, time, 0.3f), 0.0f, 1.0f);
-    auto anisotropy = clamp(evaluate_scalar(m_specular_roughness_anisotropy, it, time, 0.0f), 0.0f, 1.0f);
-    auto specular_ior = max(evaluate_scalar(m_specular_ior, it, time, 1.5f), 1.0e-6f);
+    // The host canonicalizes platform-specific normal maps to tangent-space
+    // RGB in [0,1]. The shading frame derives its tangent from UV derivatives,
+    // so no explicit tangent attribute is required on the mesh.
+    auto effective_it = it;
+    if (m_normal != nullptr) {
+        auto normal_sample = m_normal->evaluate(it, time).xyz();
+        auto mapped_normal = normalize(make_float3(
+            2.0f * normal_sample.x - 1.0f,
+            2.0f * normal_sample.y - 1.0f,
+            2.0f * normal_sample.z - 1.0f));
+        auto world_normal = normalize(make_float3(
+            it.shading.s() * mapped_normal.x +
+            it.shading.t() * mapped_normal.y +
+            it.shading.n() * mapped_normal.z));
+        effective_it.shading = Frame::make(world_normal, it.shading.s());
+    }
+    auto base_weight = clamp(evaluate_scalar(m_base_weight, effective_it, time, 1.0f), 0.0f, 1.0f);
+    auto base_color = evaluate_color(m_base_color, effective_it, swl, time, 0.8f);
+    auto metalness = clamp(evaluate_scalar(m_base_metalness, effective_it, time, 0.0f), 0.0f, 1.0f);
+    auto diffuse_roughness = clamp(evaluate_scalar(m_base_diffuse_roughness, effective_it, time, 0.0f), 0.0f, 1.0f);
+    auto specular_weight = max(evaluate_scalar(m_specular_weight, effective_it, time, 1.0f), 0.0f);
+    auto specular_color = evaluate_color(m_specular_color, effective_it, swl, time, 1.0f);
+    auto roughness = clamp(evaluate_scalar(m_specular_roughness, effective_it, time, 0.3f), 0.0f, 1.0f);
+    auto anisotropy = clamp(evaluate_scalar(m_specular_roughness_anisotropy, effective_it, time, 0.0f), 0.0f, 1.0f);
+    auto specular_ior = max(evaluate_scalar(m_specular_ior, effective_it, time, 1.5f), 1.0e-6f);
 
     auto alpha = max(sqr(roughness), 1.0e-6f);
     auto alpha_x = alpha * sqrt(2.0f / (1.0f + sqr(1.0f - anisotropy)));
@@ -389,7 +410,7 @@ void OpenPBRSurface::Instance::populate_closure(Surface::Closure* closure,
     auto metal_average = metal_average_fresnel(weighted_base_color, specular_color);
     auto metal_mms_scale = metal_average * metal_average * (metalness * specular_weight);
 
-    auto wo_local = it.shading.world_to_local(wo);
+    auto wo_local = effective_it.shading.world_to_local(wo);
     auto no_v = max(wo_local.z, 0.0f);
     auto dielectric_view = opaque_dielectric_energy(renderer(), m_opaque_dielectric_energy_lut,
                                                     weighted_ior, alpha, no_v);
@@ -409,7 +430,7 @@ void OpenPBRSurface::Instance::populate_closure(Surface::Closure* closure,
     auto total_lobe_weight = specular_lobe_weight + metal_mms_lobe_weight + diffuse_lobe_weight;
 
     Closure::Context ctx{
-        .it = it,
+        .it = effective_it,
         .weighted_base_color = weighted_base_color,
         .specular_color = specular_color,
         .diffuse_albedo = diffuse_albedo,
@@ -590,6 +611,7 @@ void OpenPBRSurfaceSpec::visit_dependencies(SpecDependencyVisitor& visitor) cons
     visit(m_params.specular_roughness);
     visit(m_params.specular_roughness_anisotropy);
     visit(m_params.specular_ior);
+    visit(m_params.normal);
 }
 
 const Surface* OpenPBRSurfaceSpec::build(SceneBuilder& builder) const noexcept
@@ -604,6 +626,7 @@ const Surface* OpenPBRSurfaceSpec::build(SceneBuilder& builder) const noexcept
         resolve(m_params.specular_weight), resolve(m_params.specular_color),
         resolve(m_params.specular_roughness),
         resolve(m_params.specular_roughness_anisotropy),
-        resolve(m_params.specular_ior), m_params.two_sided);
+        resolve(m_params.specular_ior), resolve(m_params.normal),
+        m_params.two_sided);
 }
 } // namespace Yutrel

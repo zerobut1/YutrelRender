@@ -9,7 +9,7 @@ namespace Yutrel.PathTracer
     internal static class NativeBridge
     {
         private const string LibraryName = "YutrelUnityPlugin";
-        private const uint AbiVersion = 8;
+        private const uint AbiVersion = 9;
         private const int ClearEventId = 0;
         private const int PathTraceEventId = 1;
 
@@ -60,6 +60,17 @@ namespace Yutrel.PathTracer
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        private unsafe struct OpenPBRTextureSlotAbi
+        {
+            public IntPtr pixels; // null = unused slot (parameter falls back to constant)
+            public uint width;
+            public uint height;
+            public ExternalTextureEncoding encoding;
+            public fixed float uvScale[2];
+            public fixed float uvOffset[2];
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         private unsafe struct SceneSubMeshData
         {
             public uint indexOffset;
@@ -76,6 +87,11 @@ namespace Yutrel.PathTracer
             public ulong materialId;
             public SceneMaterialType materialType;
             public OpenPBRMaterialAbi openPbr;
+            public OpenPBRTextureSlotAbi baseColor;
+            public OpenPBRTextureSlotAbi normal;
+            public OpenPBRTextureSlotAbi specularRoughness;
+            public OpenPBRTextureSlotAbi baseMetalness;
+            public OpenPBRTextureSlotAbi materialAo;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -209,6 +225,34 @@ namespace Yutrel.PathTracer
             }
         }
 
+        internal readonly struct OpenPBRTextureSlot
+        {
+            internal readonly ExternalTextureEncoding encoding;
+            internal readonly Color[] pixels; // null = slot unused
+            internal readonly uint width;
+            internal readonly uint height;
+            internal readonly Vector2 uvScale;
+            internal readonly Vector2 uvOffset;
+
+            internal OpenPBRTextureSlot(
+                ExternalTextureEncoding encoding,
+                Color[] pixels,
+                uint width,
+                uint height,
+                Vector2 uvScale,
+                Vector2 uvOffset)
+            {
+                this.encoding = encoding;
+                this.pixels = pixels;
+                this.width = width;
+                this.height = height;
+                this.uvScale = uvScale;
+                this.uvOffset = uvOffset;
+            }
+
+            internal bool HasTexture => pixels != null && width > 0 && height > 0;
+        }
+
         internal readonly struct SceneSubMeshUpdate
         {
             internal readonly uint indexOffset;
@@ -225,6 +269,11 @@ namespace Yutrel.PathTracer
             internal readonly ulong materialId;
             internal readonly SceneMaterialType materialType;
             internal readonly OpenPBRMaterialData openPbr;
+            internal readonly OpenPBRTextureSlot baseColor;
+            internal readonly OpenPBRTextureSlot normal;
+            internal readonly OpenPBRTextureSlot specularRoughness;
+            internal readonly OpenPBRTextureSlot baseMetalness;
+            internal readonly OpenPBRTextureSlot materialAo;
 
             internal SceneSubMeshUpdate(
                 uint indexOffset,
@@ -240,7 +289,12 @@ namespace Yutrel.PathTracer
                 Vector2 uvOffset,
                 ulong materialId,
                 SceneMaterialType materialType,
-                OpenPBRMaterialData openPbr)
+                OpenPBRMaterialData openPbr,
+                OpenPBRTextureSlot baseColor,
+                OpenPBRTextureSlot normal,
+                OpenPBRTextureSlot specularRoughness,
+                OpenPBRTextureSlot baseMetalness,
+                OpenPBRTextureSlot materialAo)
             {
                 this.indexOffset = indexOffset;
                 this.indexCount = indexCount;
@@ -256,6 +310,11 @@ namespace Yutrel.PathTracer
                 this.materialId = materialId;
                 this.materialType = materialType;
                 this.openPbr = openPbr;
+                this.baseColor = baseColor;
+                this.normal = normal;
+                this.specularRoughness = specularRoughness;
+                this.baseMetalness = baseMetalness;
+                this.materialAo = materialAo;
             }
         }
 
@@ -415,7 +474,8 @@ namespace Yutrel.PathTracer
             DirectionalLightUpdate? lightUpdate)
         {
 #if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
-            if (sizeof(OpenPBRMaterialAbi) != 52 || sizeof(SceneSubMeshData) != 128 ||
+            if (sizeof(OpenPBRMaterialAbi) != 52 || sizeof(OpenPBRTextureSlotAbi) != 40 ||
+                sizeof(SceneSubMeshData) != 328 ||
                 sizeof(SceneMaterialUpdateData) != 80)
             {
                 ReportErrorOnce("Yutrel OpenPBR material ABI layout is invalid.");
@@ -516,6 +576,11 @@ namespace Yutrel.PathTracer
                                 pinnedArrays.Add(pixelsHandle);
                                 subMeshDescriptor.emissivePixels = pixelsHandle.AddrOfPinnedObject();
                             }
+                            FillOpenPBRTextureSlot(ref subMeshDescriptor.baseColor, subMesh.baseColor, pinnedArrays);
+                            FillOpenPBRTextureSlot(ref subMeshDescriptor.normal, subMesh.normal, pinnedArrays);
+                            FillOpenPBRTextureSlot(ref subMeshDescriptor.specularRoughness, subMesh.specularRoughness, pinnedArrays);
+                            FillOpenPBRTextureSlot(ref subMeshDescriptor.baseMetalness, subMesh.baseMetalness, pinnedArrays);
+                            FillOpenPBRTextureSlot(ref subMeshDescriptor.materialAo, subMesh.materialAo, pinnedArrays);
                             subMeshDescriptors[subMeshIndex] = subMeshDescriptor;
                         }
                         var subMeshesHandle = GCHandle.Alloc(subMeshDescriptors, GCHandleType.Pinned);
@@ -623,6 +688,27 @@ namespace Yutrel.PathTracer
 #else
             return false;
 #endif
+        }
+
+        private static unsafe void FillOpenPBRTextureSlot(
+            ref OpenPBRTextureSlotAbi slot,
+            OpenPBRTextureSlot source,
+            List<GCHandle> pinnedArrays)
+        {
+            slot.encoding = source.encoding;
+            slot.width = source.width;
+            slot.height = source.height;
+            slot.uvScale[0] = source.uvScale.x;
+            slot.uvScale[1] = source.uvScale.y;
+            slot.uvOffset[0] = source.uvOffset.x;
+            slot.uvOffset[1] = source.uvOffset.y;
+            slot.pixels = IntPtr.Zero;
+            if (source.HasTexture)
+            {
+                var handle = GCHandle.Alloc(source.pixels, GCHandleType.Pinned);
+                pinnedArrays.Add(handle);
+                slot.pixels = handle.AddrOfPinnedObject();
+            }
         }
 
         internal static void IssuePathTrace(

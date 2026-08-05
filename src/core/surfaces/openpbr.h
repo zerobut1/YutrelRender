@@ -23,6 +23,7 @@ struct OpenPBRSurfaceParams
     luisa::optional<TextureRef> specular_roughness;
     luisa::optional<TextureRef> specular_roughness_anisotropy;
     luisa::optional<TextureRef> specular_ior;
+    luisa::optional<TextureRef> normal;
     bool two_sided{true};
 };
 
@@ -42,6 +43,7 @@ private:
     const Texture* m_specular_roughness;
     const Texture* m_specular_roughness_anisotropy;
     const Texture* m_specular_ior;
+    const Texture* m_normal;
 
 public:
     OpenPBRSurface(const Texture* base_weight,
@@ -53,6 +55,7 @@ public:
                    const Texture* specular_roughness,
                    const Texture* specular_roughness_anisotropy,
                    const Texture* specular_ior,
+                   const Texture* normal,
                    bool two_sided) noexcept;
 
     [[nodiscard]] uint properties() const noexcept override { return property_reflective; }
@@ -72,6 +75,7 @@ private:
     const Texture::Instance* m_specular_roughness;
     const Texture::Instance* m_specular_roughness_anisotropy;
     const Texture::Instance* m_specular_ior;
+    const Texture::Instance* m_normal;
     uint m_opaque_dielectric_energy_lut;
     uint m_opaque_dielectric_average_lut;
     uint m_ideal_metal_energy_lut;
@@ -89,6 +93,7 @@ public:
              const Texture::Instance* specular_roughness,
              const Texture::Instance* specular_roughness_anisotropy,
              const Texture::Instance* specular_ior,
+             const Texture::Instance* normal,
              uint opaque_dielectric_energy_lut,
              uint opaque_dielectric_average_lut,
              uint ideal_metal_energy_lut,

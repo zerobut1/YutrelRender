@@ -1,17 +1,17 @@
 {
-  "name": "Yutrel.PathTracer.Runtime",
-  "rootNamespace": "Yutrel.PathTracer",
-  "references": [
-    "Yutrel.RenderPipelines.Yutrel.Runtime",
-    "Unity.RenderPipelines.Core.Runtime"
-  ],
-  "includePlatforms": [],
-  "excludePlatforms": [],
-  "allowUnsafeCode": true,
-  "overrideReferences": false,
-  "precompiledReferences": [],
-  "autoReferenced": true,
-  "defineConstraints": [],
-  "versionDefines": [],
-  "noEngineReferences": false
+    "name": "Yutrel.PathTracer.Runtime",
+    "rootNamespace": "Yutrel.PathTracer",
+    "references": [
+        "Yutrel.RenderPipelines.Yutrel.Runtime",
+        "Unity.RenderPipelines.Core.Runtime"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": true,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
 }

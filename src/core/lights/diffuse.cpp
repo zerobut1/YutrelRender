@@ -72,7 +72,7 @@ Light::Sample DiffuseLight::Closure::sample_li(
     auto attrib   = renderer.geometry()->shading_point(light_inst, triangle, uv, light_to_world);
     auto it_light = Interaction::from_surface(
         std::move(light_inst), attrib.pg, attrib.ng, attrib.uv, attrib.pg,
-        Frame::make(attrib.ns, attrib.dpdu), instance_id, triangle_id, attrib.area,
+        Frame::make(attrib.ns, attrib.dpdu, attrib.dpdv), instance_id, triangle_id, attrib.area,
         dot(attrib.ng, it_from.p_g - attrib.pg) > 0.0f);
 
     return Light::Sample{
@@ -113,7 +113,7 @@ Light::Closure::EmissionSample DiffuseLight::Closure::sample_le(
         // Evaluate emission at the sampled point
         auto it_for_texture = Interaction::from_surface(
             std::move(light_inst), attrib.pg, attrib.ng, attrib.uv, attrib.pg,
-            Frame::make(attrib.ns, attrib.dpdu), instance_id, triangle_id, attrib.area, true);
+            Frame::make(attrib.ns, attrib.dpdu, attrib.dpdv), instance_id, triangle_id, attrib.area, true);
         auto L = light->texture()->evaluate_illuminant_spectrum(it_for_texture, swl(), time()).value *
                  light->base<DiffuseLight>()->scale();
 

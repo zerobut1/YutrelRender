@@ -29,6 +29,14 @@ Frame Frame::make(Expr<float3> n, Expr<float3> s) noexcept
     return {ss, tt, n};
 }
 
+Frame Frame::make(Expr<float3> n, Expr<float3> s, Expr<float3> t) noexcept
+{
+    auto ss = normalize(s - n * dot(n, s));
+    auto tt = normalize(cross(n, ss));
+    tt *= ite(dot(tt, t) < 0.0f, -1.0f, 1.0f);
+    return {ss, tt, n};
+}
+
 Float3 Frame::local_to_world(Expr<float3> d) const noexcept
 {
     return normalize(d.x * m_s + d.y * m_t + d.z * m_n);

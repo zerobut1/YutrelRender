@@ -159,6 +159,7 @@ namespace Yutrel.PathTracer
             private bool structureDirty = true;
             private double nextStructureScan;
             private double editorStructureScanNotBefore;
+            private bool lastScanAllRebuilt;
             private ulong revision;
 
             internal SceneChangeTracker()
@@ -229,7 +230,16 @@ namespace Yutrel.PathTracer
 
             private void ScanStructure()
             {
+                // Texture reads (GetPixels) are cached per material for the
+                // duration of one structure scan: Sponza shares a handful of
+                // materials across hundreds of meshes, so without this cache
+                // every submesh re-decodes every map (~1500 GetPixels calls
+                // instead of ~96). Cleared each scan so modified textures are
+                // re-read on the next full rebuild.
+                TextureReadCache.Clear();
                 seenMeshIds.Clear();
+                var meshCount = 0;
+                var rebuiltCount = 0;
                 foreach (var filter in UnityEngine.Object.FindObjectsByType<MeshFilter>(
                              FindObjectsInactive.Exclude))
                 {
@@ -239,6 +249,7 @@ namespace Yutrel.PathTracer
                     {
                         continue;
                     }
+                    meshCount++;
 
                     var objectId = EntityId.ToULong(filter.GetEntityId());
                     var sharedMeshId = EntityId.ToULong(filter.sharedMesh.GetEntityId());
@@ -284,6 +295,7 @@ namespace Yutrel.PathTracer
                     {
                         continue;
                     }
+                    rebuiltCount++;
                     pendingUpdates.Add(update);
                     var localToWorld = filter.transform.localToWorldMatrix;
                     if (tracked == null)
@@ -313,6 +325,20 @@ namespace Yutrel.PathTracer
                 {
                     meshes.Remove(objectId);
                 }
+
+                // Diagnostic: when every mesh is rebuilt on every scan, some
+                // identity or signature input is unstable (e.g. a non-stable
+                // object id), which would re-read and re-upload all textures
+                // every 0.25 s. Report once so the cause is visible in logs.
+                var allRebuilt = meshCount > 0 && rebuiltCount == meshCount;
+                if (allRebuilt && lastScanAllRebuilt)
+                {
+                    NativeBridge.ReportErrorOnce(
+                        $"Yutrel rebuilt all {meshCount} meshes again this scan; " +
+                        "object/material identity or signatures are unstable, " +
+                        "causing repeated full scene uploads.");
+                }
+                lastScanAllRebuilt = allRebuilt;
 
                 selectedLight = null;
                 var directionalLightCount = 0;
@@ -548,7 +574,7 @@ namespace Yutrel.PathTracer
                     doubleSided = material.doubleSidedGI ||
                                   material.HasProperty(CullModeProperty) &&
                                   Mathf.RoundToInt(material.GetFloat(CullModeProperty)) ==
-                                  (int)CullMode.Off;
+                                  OpenPBRMaterialAdapter.CullModeOffValueFor(material);
                     if (OpenPBRMaterialAdapter.TryRead(material, out openPbr))
                     {
                         materialType = NativeBridge.SceneMaterialType.OpenPBR;
@@ -596,6 +622,8 @@ namespace Yutrel.PathTracer
                         else if (texture != null && TryReadTexture(
                                      objectName,
                                      texture,
+                                     false,
+                                     false,
                                      out pixels,
                                      out textureWidth,
                                      out textureHeight,
@@ -603,6 +631,55 @@ namespace Yutrel.PathTracer
                         {
                             uvScale = material.GetTextureScale(textureProperty);
                             uvOffset = material.GetTextureOffset(textureProperty);
+                        }
+                    }
+                }
+
+                // --- OpenPBR texture slots (Sponza maps) ---
+                var baseColorSlot = default(NativeBridge.OpenPBRTextureSlot);
+                var normalSlot = default(NativeBridge.OpenPBRTextureSlot);
+                var specularRoughnessSlot = default(NativeBridge.OpenPBRTextureSlot);
+                var baseMetalnessSlot = default(NativeBridge.OpenPBRTextureSlot);
+                var materialAoSlot = default(NativeBridge.OpenPBRTextureSlot);
+                if (materialType == NativeBridge.SceneMaterialType.OpenPBR && material != null)
+                {
+                    foreach (var mapping in OpenPBRMaterialAdapter.GetTextureMappings(material))
+                    {
+                        if (!material.HasProperty(mapping.propertyName))
+                        {
+                            continue;
+                        }
+                        var texture = material.GetTexture(mapping.propertyName);
+                        if (texture == null || !hasUvs)
+                        {
+                            continue;
+                        }
+                        if (!TryReadTextureCached(
+                                objectName,
+                                materialId,
+                                mapping,
+                                texture,
+                                out var mappedPixels,
+                                out var mappedWidth,
+                                out var mappedHeight,
+                                out var mappedEncoding))
+                        {
+                            continue; // error already reported; constant fallback is used
+                        }
+                        var slot = new NativeBridge.OpenPBRTextureSlot(
+                            mappedEncoding,
+                            mappedPixels,
+                            mappedWidth,
+                            mappedHeight,
+                            material.GetTextureScale(mapping.propertyName),
+                            material.GetTextureOffset(mapping.propertyName));
+                        switch (mapping.slot)
+                        {
+                            case OpenPBRTextureSlot.BaseColor: baseColorSlot = slot; break;
+                            case OpenPBRTextureSlot.Normal: normalSlot = slot; break;
+                            case OpenPBRTextureSlot.SpecularRoughness: specularRoughnessSlot = slot; break;
+                            case OpenPBRTextureSlot.BaseMetalness: baseMetalnessSlot = slot; break;
+                            case OpenPBRTextureSlot.MaterialAo: materialAoSlot = slot; break;
                         }
                     }
                 }
@@ -621,7 +698,12 @@ namespace Yutrel.PathTracer
                     uvOffset,
                     materialId,
                     materialType,
-                    openPbr);
+                    openPbr,
+                    baseColorSlot,
+                    normalSlot,
+                    specularRoughnessSlot,
+                    baseMetalnessSlot,
+                    materialAoSlot);
             }
 
             private static string EmissiveTexturePropertyFor(Material material)
@@ -636,9 +718,91 @@ namespace Yutrel.PathTracer
                 return shaderName == UnlitShaderName ? MainTextureProperty : null;
             }
 
+            // Per-material texture read cache, valid for one structure scan.
+            // Keys are (materialId, propertyName); entries hold the decoded
+            // float4 pixel array together with the Texture.updateCount used to
+            // detect re-imports (so a modified texture invalidates the cache).
+            private sealed class CachedTexture
+            {
+                internal readonly Color[] pixels;
+                internal readonly uint width;
+                internal readonly uint height;
+                internal readonly NativeBridge.ExternalTextureEncoding encoding;
+                internal readonly uint updateCount;
+
+                internal CachedTexture(
+                    Color[] pixels,
+                    uint width,
+                    uint height,
+                    NativeBridge.ExternalTextureEncoding encoding,
+                    uint updateCount)
+                {
+                    this.pixels = pixels;
+                    this.width = width;
+                    this.height = height;
+                    this.encoding = encoding;
+                    this.updateCount = updateCount;
+                }
+            }
+
+            private static readonly Dictionary<ulong, Dictionary<string, CachedTexture>>
+                TextureReadCache = new();
+
+            private static bool TryReadTextureCached(
+                string objectName,
+                ulong materialId,
+                OpenPBRTextureMapping mapping,
+                Texture texture,
+                out Color[] pixels,
+                out uint width,
+                out uint height,
+                out NativeBridge.ExternalTextureEncoding encoding)
+            {
+                pixels = null;
+                width = 0;
+                height = 0;
+                encoding = NativeBridge.ExternalTextureEncoding.LinearSrgb;
+                if (TextureReadCache.TryGetValue(materialId, out var perMaterial) &&
+                    perMaterial.TryGetValue(mapping.propertyName, out var cached) &&
+                    cached.updateCount == texture.updateCount)
+                {
+                    pixels = cached.pixels;
+                    width = cached.width;
+                    height = cached.height;
+                    encoding = cached.encoding;
+                    return true;
+                }
+                if (!TryReadTexture(
+                        objectName,
+                        texture,
+                        mapping.invert,
+                        mapping.slot == OpenPBRTextureSlot.Normal,
+                        out pixels,
+                        out width,
+                        out height,
+                        out encoding))
+                {
+                    return false;
+                }
+                if (mapping.isSRGB)
+                {
+                    encoding = NativeBridge.ExternalTextureEncoding.Srgb;
+                }
+                if (perMaterial == null || !TextureReadCache.TryGetValue(materialId, out perMaterial))
+                {
+                    perMaterial = new Dictionary<string, CachedTexture>();
+                    TextureReadCache[materialId] = perMaterial;
+                }
+                perMaterial[mapping.propertyName] =
+                    new CachedTexture(pixels, width, height, encoding, texture.updateCount);
+                return true;
+            }
+
             private static bool TryReadTexture(
                 string objectName,
                 Texture texture,
+                bool invert,
+                bool unpackNormal,
                 out Color[] pixels,
                 out uint width,
                 out uint height,
@@ -651,8 +815,8 @@ namespace Yutrel.PathTracer
                 if (texture is not Texture2D texture2D || !texture2D.isReadable)
                 {
                     NativeBridge.ReportErrorOnce(
-                        $"Yutrel emissive texture '{texture.name}' on Mesh '{objectName}' must be a readable Texture2D. " +
-                        "The constant emissive color will be used instead.");
+                        $"Yutrel texture '{texture.name}' on Mesh '{objectName}' must be a readable Texture2D. " +
+                        "The constant parameter will be used instead.");
                     return false;
                 }
 
@@ -663,7 +827,7 @@ namespace Yutrel.PathTracer
                 catch (UnityException exception)
                 {
                     NativeBridge.ReportErrorOnce(
-                        $"Yutrel could not read emissive texture '{texture.name}': {exception.Message}");
+                        $"Yutrel could not read texture '{texture.name}': {exception.Message}");
                     pixels = null;
                     return false;
                 }
@@ -680,10 +844,40 @@ namespace Yutrel.PathTracer
                         !IsFinite(pixel.b) || !IsFinite(pixel.a))
                     {
                         NativeBridge.ReportErrorOnce(
-                            $"Yutrel emissive texture '{texture.name}' contains non-finite pixels. " +
-                            "The constant emissive color will be used instead.");
+                            $"Yutrel texture '{texture.name}' contains non-finite pixels. " +
+                            "The constant parameter will be used instead.");
                         pixels = null;
                         return false;
+                    }
+                    if (unpackNormal)
+                    {
+                        // Match Unity's UnpackNormalMapRGorAG. DXT5nm stores X
+                        // in A with R=1; BC5 stores X in R with A=1, so R*A
+                        // handles both desktop encodings. Upload canonical RGB
+                        // so the native renderer remains Unity-independent.
+                        var normalX = pixel.r * pixel.a * 2.0f - 1.0f;
+                        var normalY = pixel.g * 2.0f - 1.0f;
+                        var normalZ = Mathf.Sqrt(Mathf.Max(
+                            1.0e-16f,
+                            1.0f - Mathf.Clamp01(normalX * normalX + normalY * normalY)));
+                        pixel = new Color(
+                            normalX * 0.5f + 0.5f,
+                            normalY * 0.5f + 0.5f,
+                            normalZ * 0.5f + 0.5f,
+                            1.0f);
+                    }
+                    else if (invert)
+                    {
+                        // TODO(临时): smoothness -> roughness 反相在主机侧逐像素做
+                        // (1-x)。正解候选: a) 渲染器 Texture 层加 invert 变换;
+                        // b) 上传原始 smoothness,OpenPBRSurface 对
+                        // specular_roughness 槽采样后反相; c) 素材预处理导出
+                        // roughness 贴图。
+                        pixel = new Color(
+                            1.0f - pixel.r,
+                            1.0f - pixel.g,
+                            1.0f - pixel.b,
+                            1.0f - pixel.a);
                     }
                     pixels[pixelIndex] = new Color(
                         Mathf.Max(pixel.r, 0.0f),
@@ -693,7 +887,7 @@ namespace Yutrel.PathTracer
                 }
                 width = (uint)texture2D.width;
                 height = (uint)texture2D.height;
-                encoding = texture2D.isDataSRGB
+                encoding = !unpackNormal && texture2D.isDataSRGB
                     ? NativeBridge.ExternalTextureEncoding.Srgb
                     : NativeBridge.ExternalTextureEncoding.LinearSrgb;
                 return true;
@@ -735,6 +929,7 @@ namespace Yutrel.PathTracer
                         if (OpenPBRMaterialAdapter.IsOpenPBR(material))
                         {
                             hash = hash * 397 ^ OpenPBRMaterialAdapter.ComputeSignature(material);
+                            hash = HashOpenPBRTextures(material, hash);
                         }
                         var textureProperty = EmissiveTexturePropertyFor(material);
                         if (textureProperty == null)
@@ -756,6 +951,33 @@ namespace Yutrel.PathTracer
                 }
             }
 
+            private static int HashOpenPBRTextures(Material material, int hash)
+            {
+                unchecked
+                {
+                    foreach (var mapping in OpenPBRMaterialAdapter.GetTextureMappings(material))
+                    {
+                        if (!material.HasProperty(mapping.propertyName))
+                        {
+                            continue;
+                        }
+                        var texture = material.GetTexture(mapping.propertyName);
+                        hash = hash * 397 ^ (texture != null
+                            ? EntityId.ToULong(texture.GetEntityId()).GetHashCode()
+                            : 0);
+                        if (texture != null)
+                        {
+                            hash = hash * 397 ^ texture.updateCount.GetHashCode();
+                            hash = hash * 397 ^
+                                   material.GetTextureScale(mapping.propertyName).GetHashCode();
+                            hash = hash * 397 ^
+                                   material.GetTextureOffset(mapping.propertyName).GetHashCode();
+                        }
+                    }
+                }
+                return hash;
+            }
+
             private static bool TryReadSubMeshMaterialState(
                 Material material,
                 out SubMeshMaterialState state)
@@ -768,7 +990,7 @@ namespace Yutrel.PathTracer
                                   (material.doubleSidedGI ||
                                    material.HasProperty(CullModeProperty) &&
                                    Mathf.RoundToInt(material.GetFloat(CullModeProperty)) ==
-                                   (int)CullMode.Off);
+                                   OpenPBRMaterialAdapter.CullModeOffValueFor(material));
                 var isOpenPbr = OpenPBRMaterialAdapter.IsOpenPBR(material);
                 var materialType = isOpenPbr
                     ? NativeBridge.SceneMaterialType.OpenPBR
@@ -815,6 +1037,10 @@ namespace Yutrel.PathTracer
                                 restHash = restHash * 397 ^
                                            material.GetTextureOffset(textureProperty).GetHashCode();
                             }
+                        }
+                        if (isOpenPbr)
+                        {
+                            restHash = HashOpenPBRTextures(material, restHash);
                         }
                     }
                     state = new SubMeshMaterialState
