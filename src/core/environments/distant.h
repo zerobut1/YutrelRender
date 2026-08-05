@@ -43,9 +43,14 @@ public:
              const DistantEnvironment* environment,
              const Texture::Instance* emission) noexcept;
 
-    void update_external_state(
+    [[nodiscard]] bool supports_external_directional_light() const noexcept override
+    {
+        return true;
+    }
+
+    void update_external_directional_light(
         CommandBuffer& command_buffer,
-        const ExternalDirectionalLightState& state) noexcept;
+        const ExternalDirectionalLightState& state) noexcept override;
 
     [[nodiscard]] Evaluation evaluate(
         Expr<float3> wi, const SampledWavelengths& swl,

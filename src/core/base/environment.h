@@ -8,6 +8,7 @@ using namespace luisa;
 using namespace luisa::compute;
 
 class Renderer;
+struct ExternalDirectionalLightState;
 
 class Environment
 {
@@ -67,6 +68,15 @@ public:
             Expr<float> time,
             Expr<float2> u,
             bool allow_incomplete_pdf) const noexcept = 0;
+
+        [[nodiscard]] virtual bool supports_external_directional_light() const noexcept
+        {
+            return false;
+        }
+
+        virtual void update_external_directional_light(
+            CommandBuffer&,
+            const ExternalDirectionalLightState&) noexcept {}
     };
 
 public:

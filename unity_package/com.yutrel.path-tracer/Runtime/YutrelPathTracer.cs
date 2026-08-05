@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering;
@@ -155,6 +156,8 @@ namespace Yutrel.PathTracer
             private Light selectedLight;
             private NativeBridge.DirectionalLightUpdate previousLight;
             private bool previousLightValid;
+            private NativeBridge.EnvironmentUpdate previousEnvironment;
+            private bool previousEnvironmentValid;
             private bool initialized;
             private bool structureDirty = true;
             private double nextStructureScan;
@@ -181,7 +184,7 @@ namespace Yutrel.PathTracer
                 pendingMaterialUpdates.Clear();
             }
 
-            internal bool Synchronize()
+            internal bool Synchronize(Camera camera)
             {
                 pendingUpdates.Clear();
                 pendingMaterialUpdates.Clear();
@@ -204,7 +207,11 @@ namespace Yutrel.PathTracer
                 CompareTransforms();
                 var light = CurrentLightState();
                 var lightChanged = !previousLightValid || !LightNear(previousLight, light);
-                if (pendingUpdates.Count == 0 && pendingMaterialUpdates.Count == 0 && !lightChanged)
+                var environment = CurrentEnvironmentState(camera);
+                var environmentChanged = !previousEnvironmentValid ||
+                                         !EnvironmentNear(previousEnvironment, environment);
+                if (pendingUpdates.Count == 0 && pendingMaterialUpdates.Count == 0 &&
+                    !lightChanged && !environmentChanged)
                 {
                     return true;
                 }
@@ -214,17 +221,21 @@ namespace Yutrel.PathTracer
                         pendingUpdates,
                         pendingMaterialUpdates,
                         revision,
-                        lightChanged ? light : null))
+                        lightChanged ? light : null,
+                        environmentChanged ? environment : null))
                 {
                     meshes.Clear();
                     selectedLight = null;
                     previousLightValid = false;
+                    previousEnvironmentValid = false;
                     initialized = false;
                     structureDirty = true;
                     return false;
                 }
                 previousLight = light;
                 previousLightValid = true;
+                previousEnvironment = environment;
+                previousEnvironmentValid = true;
                 return true;
             }
 
@@ -444,6 +455,85 @@ namespace Yutrel.PathTracer
                     illuminanceLux,
                     direction,
                     true);
+            }
+
+            private static NativeBridge.EnvironmentUpdate CurrentEnvironmentState(Camera camera)
+            {
+#if UNITY_EDITOR
+                if (!YutrelEnvironmentLight.TryResolve(camera, out var environmentLight))
+                {
+                    return NativeBridge.EnvironmentUpdate.Disabled;
+                }
+
+                var intensity = environmentLight.Intensity;
+                if (!IsFinite(intensity) || intensity < 0.0f)
+                {
+                    NativeBridge.ReportErrorOnce(
+                        "YutrelEnvironmentLight has an invalid environment intensity.");
+                    return NativeBridge.EnvironmentUpdate.Disabled;
+                }
+                if (intensity == 0.0f)
+                {
+                    return NativeBridge.EnvironmentUpdate.Disabled;
+                }
+
+                var asset = environmentLight.IblAsset;
+                if (asset == null)
+                {
+                    NativeBridge.ReportErrorOnce(
+                        "YutrelEnvironmentLight has no IBL asset for Path Tracing.");
+                    return NativeBridge.EnvironmentUpdate.Disabled;
+                }
+
+                var sourceTexture = asset.SourceEnvironmentTexture;
+                if (sourceTexture == null || sourceTexture.height <= 0 ||
+                    sourceTexture.width != sourceTexture.height * 2)
+                {
+                    NativeBridge.ReportErrorOnce(
+                        "YutrelEnvironmentLight Path Tracing source texture must be a 2:1 lat-long HDR.");
+                    return NativeBridge.EnvironmentUpdate.Disabled;
+                }
+
+                var sourcePath = asset.sourceEnvironmentTexturePath?.Trim();
+                if (string.IsNullOrEmpty(sourcePath) ||
+                    !sourcePath.Replace('\\', '/').StartsWith(
+                        "Assets/", StringComparison.OrdinalIgnoreCase))
+                {
+                    NativeBridge.ReportErrorOnce(
+                        "YutrelEnvironmentLight has no valid project-relative source HDR path.");
+                    return NativeBridge.EnvironmentUpdate.Disabled;
+                }
+
+                try
+                {
+                    var projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+                    var assetsRoot = Path.GetFullPath(Application.dataPath);
+                    var assetsPrefix = assetsRoot.EndsWith(
+                        Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal)
+                        ? assetsRoot
+                        : assetsRoot + Path.DirectorySeparatorChar;
+                    var hdrPath = Path.GetFullPath(Path.Combine(projectRoot, sourcePath));
+                    if (!hdrPath.StartsWith(assetsPrefix, StringComparison.OrdinalIgnoreCase) ||
+                        !File.Exists(hdrPath))
+                    {
+                        NativeBridge.ReportErrorOnce(
+                            $"YutrelEnvironmentLight source HDR does not exist under Assets: '{sourcePath}'.");
+                        return NativeBridge.EnvironmentUpdate.Disabled;
+                    }
+                    return new NativeBridge.EnvironmentUpdate(hdrPath, intensity, true);
+                }
+                catch (Exception exception) when (
+                    exception is ArgumentException ||
+                    exception is NotSupportedException ||
+                    exception is IOException)
+                {
+                    NativeBridge.ReportErrorOnce(
+                        $"YutrelEnvironmentLight source HDR path is invalid: '{sourcePath}'.");
+                    return NativeBridge.EnvironmentUpdate.Disabled;
+                }
+#else
+                return NativeBridge.EnvironmentUpdate.Disabled;
+#endif
             }
 
             private bool TryCreateMeshUpdate(
@@ -1197,6 +1287,19 @@ namespace Yutrel.PathTracer
                        CameraChangeEpsilon * CameraChangeEpsilon;
             }
 
+            private static bool EnvironmentNear(
+                NativeBridge.EnvironmentUpdate lhs,
+                NativeBridge.EnvironmentUpdate rhs)
+            {
+                return lhs.enabled == rhs.enabled &&
+                       (!lhs.enabled ||
+                        (string.Equals(
+                             lhs.hdrPath,
+                             rhs.hdrPath,
+                             StringComparison.OrdinalIgnoreCase) &&
+                         Mathf.Abs(lhs.intensity - rhs.intensity) <= CameraChangeEpsilon));
+            }
+
 #if UNITY_EDITOR
             private void OnObjectChangesPublished(
                 ref UnityEditor.ObjectChangeEventStream stream)
@@ -1342,7 +1445,7 @@ namespace Yutrel.PathTracer
 
             var view = GetOrCreateView(camera);
 
-            if (sceneChangeTracker == null || !sceneChangeTracker.Synchronize())
+            if (sceneChangeTracker == null || !sceneChangeTracker.Synchronize(camera))
             {
                 return CreateBlackFallback(renderGraph, context.targetSize, context.sceneColorFormat);
             }

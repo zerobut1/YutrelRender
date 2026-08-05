@@ -75,6 +75,32 @@ Environment::Sample GroupedEnvironment::Instance::sample(
     return result;
 }
 
+bool GroupedEnvironment::Instance::supports_external_directional_light() const noexcept
+{
+    for (auto&& environment : _environments)
+    {
+        if (environment->supports_external_directional_light())
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+void GroupedEnvironment::Instance::update_external_directional_light(
+    CommandBuffer& command_buffer,
+    const ExternalDirectionalLightState& state) noexcept
+{
+    for (auto&& environment : _environments)
+    {
+        if (environment->supports_external_directional_light())
+        {
+            environment->update_external_directional_light(command_buffer, state);
+            return;
+        }
+    }
+}
+
 luisa::unique_ptr<Environment::Instance> GroupedEnvironment::build(
     Renderer& renderer, CommandBuffer& command_buffer) const noexcept
 {

@@ -26,7 +26,7 @@ DistantEnvironment::Instance::Instance(
         << commit();
 }
 
-void DistantEnvironment::Instance::update_external_state(
+void DistantEnvironment::Instance::update_external_directional_light(
     CommandBuffer& command_buffer,
     const ExternalDirectionalLightState& state) noexcept
 {

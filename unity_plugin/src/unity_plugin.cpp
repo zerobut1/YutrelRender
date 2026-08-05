@@ -1,4 +1,5 @@
 #include "unity_device_config.h"
+#include "environment_state.h"
 
 #include <IUnityGraphics.h>
 #include <IUnityInterface.h>
@@ -27,6 +28,8 @@
 #include "base/texture.h"
 #include "cameras/pinhole.h"
 #include "environments/distant.h"
+#include "environments/grouped.h"
+#include "environments/latlong.h"
 #include "filters/box.h"
 #include "integrators/path.h"
 #include "lights/diffuse.h"
@@ -38,6 +41,7 @@
 #include "surfaces/diffuse.h"
 #include "surfaces/openpbr.h"
 #include "textures/constant.h"
+#include "textures/image.h"
 #include "textures/scale.h"
 
 namespace yutrel::unity {
@@ -45,7 +49,7 @@ namespace yutrel::unity {
 using namespace luisa;
 using namespace luisa::compute;
 
-constexpr uint32_t abi_version = 9u;
+constexpr uint32_t abi_version = 10u;
 constexpr int clear_event_id = 0;
 constexpr int path_trace_event_id = 1;
 constexpr size_t external_instance_capacity = 4096u;
@@ -170,13 +174,16 @@ struct SceneDeltaData {
     uint32_t mesh_struct_size;
     DirectionalLightData light;
     uint32_t light_changed;
+    uint32_t environment_changed;
     const SceneMaterialUpdateData *material_updates;
     uint32_t material_update_count;
     uint32_t material_update_struct_size;
+    EnvironmentData environment;
 };
 
 static_assert(sizeof(DirectionalLightData) == 32u);
-static_assert(sizeof(SceneDeltaData) == 88u);
+static_assert(sizeof(EnvironmentData) == 24u);
+static_assert(sizeof(SceneDeltaData) == 112u);
 
 struct PathTraceEventData {
     uint32_t abi_version;
@@ -307,6 +314,7 @@ struct DesiredScene {
         .direction = make_float3(0.0f, 0.0f, 1.0f),
         .enabled = 0u,
     };
+    EnvironmentSnapshot environment;
     uint64_t revision{};
 
     [[nodiscard]] bool has_emissive() const noexcept {
@@ -792,15 +800,31 @@ using MaterialTextureRegistry = luisa::unordered_map<uint64_t, luisa::unique_ptr
     SourceLocation source{.file = "<unity-static-scene>"};
     auto albedo = builder.add_anonymous_texture<ConstantTextureSpec>(
         source, make_float4(0.5f, 0.5f, 0.5f, 1.0f));
-    auto emission = builder.add_anonymous_texture<ConstantTextureSpec>(
+    auto distant_emission = builder.add_anonymous_texture<ConstantTextureSpec>(
         source, make_float4(1.0f));
     auto default_surface = builder.add_anonymous_surface<DiffuseSurfaceSpec>(source, albedo, true);
     auto spectrum = builder.add_anonymous_spectrum<HeroWavelengthSpectrumSpec>(source);
-    auto environment = builder.add_anonymous_environment<DistantEnvironmentSpec>(
+    auto distant_environment = builder.add_anonymous_environment<DistantEnvironmentSpec>(
         source,
-        emission,
+        distant_emission,
         1.0f,
         make_float3(0.0f, 0.0f, 1.0f));
+    EnvironmentRef environment = distant_environment;
+    if (snapshot.environment.enabled) {
+        auto texture = builder.add_anonymous_texture<ImageTextureSpec>(
+            source,
+            snapshot.environment.path,
+            TextureSampler::linear_point_repeat(),
+            Texture::Encoding::LINEAR);
+        auto latlong_environment = builder.add_anonymous_environment<LatLongEnvironmentSpec>(
+            source,
+            texture,
+            snapshot.environment.intensity,
+            make_float3x3(1.0f));
+        environment = builder.add_anonymous_environment<GroupedEnvironmentSpec>(
+            source,
+            luisa::vector<EnvironmentRef>{latlong_environment, distant_environment});
+    }
     auto camera_ref = builder.add_anonymous_camera<PinholeCameraSpec>(
         source,
         camera.camera_to_world,
@@ -1007,6 +1031,7 @@ private:
         Yutrel::ExternalCameraState active_camera{};
         bool active_camera_valid{};
         bool requires_static_scene{};
+        uint64_t applied_environment_revision{};
         uint64_t applied_revision{};
 
         [[nodiscard]] ViewRuntime &view(uint32_t view_id) {
@@ -1106,7 +1131,7 @@ public:
                 data.mesh_struct_size != sizeof(SceneMeshDelta) ||
                 (data.material_update_count != 0u && data.material_updates == nullptr) ||
                 data.material_update_struct_size != sizeof(SceneMaterialUpdateData) ||
-                data.light_changed > 1u) {
+                data.light_changed > 1u || data.environment_changed > 1u) {
                 return 1;
             }
             struct OwnedDelta {
@@ -1167,6 +1192,13 @@ public:
                     return 1;
                 }
             }
+            auto environment = luisa::optional<EnvironmentSnapshot>{};
+            if (data.environment_changed != 0u) {
+                environment = copy_environment(data.environment, data.revision);
+                if (!environment) {
+                    return 1;
+                }
+            }
             auto resulting_mesh_count = _desired_scene.meshes.size();
             for (auto &delta : deltas) {
                 auto exists = _desired_scene.meshes.find(delta.id) != _desired_scene.meshes.end();
@@ -1194,6 +1226,9 @@ public:
             }
             if (light) {
                 _desired_scene.light = *light;
+            }
+            if (environment) {
+                _desired_scene.environment = std::move(*environment);
             }
             // Apply material-only updates: parameters, double_sided and the
             // material identity on the referenced submesh. geometry_revision is
@@ -1311,6 +1346,7 @@ private:
         runtime->material_textures = luisa::make_unique<MaterialTextureRegistry>();
         luisa::vector<uint64_t> instance_ids;
         runtime->requires_static_scene = _desired_scene.requires_static_scene();
+        runtime->applied_environment_revision = _desired_scene.environment.revision;
         {
             Clock clock_scene;
             runtime->scene = create_scene(
@@ -1378,6 +1414,9 @@ private:
     }
 
     [[nodiscard]] bool scene_requires_rebuild(const SceneRuntime &runtime) const noexcept {
+        if (runtime.applied_environment_revision != _desired_scene.environment.revision) {
+            return true;
+        }
         auto desired_requires_static_scene = _desired_scene.requires_static_scene();
         if (runtime.requires_static_scene != desired_requires_static_scene) {
             return true;
@@ -1562,7 +1601,7 @@ private:
         if (scene_requires_rebuild(*_scene_runtime)) {
             _scene_runtime = nullptr;
             if (!ensure_runtime(camera)) {
-                report_path_error_once(path_error_scene, "Failed to rebuild the Unity material scene.");
+                report_path_error_once(path_error_scene, "Failed to rebuild the Unity scene.");
                 return false;
             }
         }

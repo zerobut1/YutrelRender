@@ -62,3 +62,14 @@ target("YutrelUnityPlugin")
         end
     end)
 target_end()
+
+target("test_Yutrel_unity_environment_state")
+    set_kind("binary")
+    set_default(false)
+    set_group("tests/Yutrel/unity_plugin")
+    set_rundir("$(projectdir)")
+
+    add_files("tests/environment_state.cpp", "src/environment_state.cpp")
+    add_includedirs("src")
+    add_deps("YutrelCore")
+target_end()

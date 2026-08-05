@@ -44,6 +44,10 @@ public:
     [[nodiscard]] Sample sample(
         const SampledWavelengths& swl, Expr<float> time,
         Expr<float2> u, bool allow_incomplete_pdf) const noexcept override;
+    [[nodiscard]] bool supports_external_directional_light() const noexcept override;
+    void update_external_directional_light(
+        CommandBuffer& command_buffer,
+        const ExternalDirectionalLightState& state) noexcept override;
 };
 
 class GroupedEnvironmentSpec final : public EnvironmentSpec

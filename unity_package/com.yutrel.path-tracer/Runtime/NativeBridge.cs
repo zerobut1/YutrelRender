@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Text;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -9,7 +10,8 @@ namespace Yutrel.PathTracer
     internal static class NativeBridge
     {
         private const string LibraryName = "YutrelUnityPlugin";
-        private const uint AbiVersion = 9;
+        private const uint AbiVersion = 10;
+        private const int MaxEnvironmentPathByteCount = 32768;
         private const int ClearEventId = 0;
         private const int PathTraceEventId = 1;
 
@@ -122,6 +124,15 @@ namespace Yutrel.PathTracer
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        private struct EnvironmentData
+        {
+            public IntPtr pathUtf8;
+            public uint pathByteCount;
+            public float intensity;
+            public uint enabled;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         private unsafe struct SceneMaterialUpdateData
         {
             public ulong meshId;
@@ -142,9 +153,11 @@ namespace Yutrel.PathTracer
             public uint meshStructSize;
             public DirectionalLightData light;
             public uint lightChanged;
+            public uint environmentChanged;
             public IntPtr materialUpdates;
             public uint materialUpdateCount;
             public uint materialUpdateStructSize;
+            public EnvironmentData environment;
         }
 
         internal readonly struct SceneMeshUpdate
@@ -361,6 +374,22 @@ namespace Yutrel.PathTracer
             }
         }
 
+        internal readonly struct EnvironmentUpdate
+        {
+            internal readonly string hdrPath;
+            internal readonly float intensity;
+            internal readonly bool enabled;
+
+            internal EnvironmentUpdate(string hdrPath, float intensity, bool enabled)
+            {
+                this.hdrPath = enabled ? hdrPath : null;
+                this.intensity = enabled ? intensity : 0.0f;
+                this.enabled = enabled;
+            }
+
+            internal static EnvironmentUpdate Disabled => new(null, 0.0f, false);
+        }
+
         [StructLayout(LayoutKind.Sequential)]
         private struct PathTraceEventData
         {
@@ -471,14 +500,16 @@ namespace Yutrel.PathTracer
             IReadOnlyList<SceneMeshUpdate> meshes,
             IReadOnlyList<SceneMaterialUpdate> materialUpdates,
             ulong revision,
-            DirectionalLightUpdate? lightUpdate)
+            DirectionalLightUpdate? lightUpdate,
+            EnvironmentUpdate? environmentUpdate)
         {
 #if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
             if (sizeof(OpenPBRMaterialAbi) != 52 || sizeof(OpenPBRTextureSlotAbi) != 40 ||
                 sizeof(SceneSubMeshData) != 328 ||
-                sizeof(SceneMaterialUpdateData) != 80)
+                sizeof(SceneMaterialUpdateData) != 80 || sizeof(EnvironmentData) != 24 ||
+                sizeof(SceneDeltaData) != 112)
             {
-                ReportErrorOnce("Yutrel OpenPBR material ABI layout is invalid.");
+                ReportErrorOnce("Yutrel scene ABI layout is invalid.");
                 return false;
             }
             if (renderEvent == IntPtr.Zero || meshes == null || revision == 0)
@@ -635,6 +666,32 @@ namespace Yutrel.PathTracer
                     pinnedArrays.Add(materialHandle);
                 }
 
+                var environmentData = default(EnvironmentData);
+                if (environmentUpdate.HasValue)
+                {
+                    var environment = environmentUpdate.Value;
+                    if (environment.enabled)
+                    {
+                        if (string.IsNullOrEmpty(environment.hdrPath))
+                        {
+                            ReportErrorOnce("Yutrel environment has no HDR path.");
+                            return false;
+                        }
+                        var pathUtf8 = Encoding.UTF8.GetBytes(environment.hdrPath);
+                        if (pathUtf8.Length == 0 || pathUtf8.Length > MaxEnvironmentPathByteCount)
+                        {
+                            ReportErrorOnce("Yutrel environment HDR path is too long.");
+                            return false;
+                        }
+                        var pathHandle = GCHandle.Alloc(pathUtf8, GCHandleType.Pinned);
+                        pinnedArrays.Add(pathHandle);
+                        environmentData.pathUtf8 = pathHandle.AddrOfPinnedObject();
+                        environmentData.pathByteCount = (uint)pathUtf8.Length;
+                        environmentData.intensity = environment.intensity;
+                        environmentData.enabled = 1u;
+                    }
+                }
+
                 fixed (SceneMeshDelta* meshPointer = descriptors)
                 {
                     var data = new SceneDeltaData
@@ -650,7 +707,9 @@ namespace Yutrel.PathTracer
                             : IntPtr.Zero,
                         materialUpdateCount = (uint)materialDescriptors.Length,
                         materialUpdateStructSize = (uint)sizeof(SceneMaterialUpdateData),
-                        lightChanged = lightUpdate.HasValue ? 1u : 0u
+                        lightChanged = lightUpdate.HasValue ? 1u : 0u,
+                        environmentChanged = environmentUpdate.HasValue ? 1u : 0u,
+                        environment = environmentData
                     };
                     if (lightUpdate.HasValue)
                     {

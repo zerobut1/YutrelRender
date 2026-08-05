@@ -9,7 +9,6 @@
 #include "base/geometry.h"
 #include "base/integrator.h"
 #include "base/scene.h"
-#include "environments/distant.h"
 
 namespace Yutrel
 {
@@ -166,7 +165,8 @@ bool Renderer::update_external_scene(
         {
             return false;
         }
-        if (dynamic_cast<DistantEnvironment::Instance*>(m_environment.get()) == nullptr)
+        if (m_environment == nullptr ||
+            !m_environment->supports_external_directional_light())
         {
             return false;
         }
@@ -178,8 +178,8 @@ bool Renderer::update_external_scene(
     }
     if (light_update)
     {
-        static_cast<DistantEnvironment::Instance*>(m_environment.get())
-            ->update_external_state(command_buffer, *light_update);
+        m_environment->update_external_directional_light(
+            command_buffer, *light_update);
     }
     return true;
 }

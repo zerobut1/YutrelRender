@@ -397,13 +397,54 @@ void write_latlong_pfm(
            nearly_equal(rotated_x.y, identity_z.y, 5.0e-4f);
 }
 
+[[nodiscard]] bool test_external_hdr(
+    Device& device,
+    Stream& stream,
+    const std::filesystem::path& image_path)
+{
+    auto scene = create_scene(image_path, 20000.0f, make_float3x3(1.0f));
+    if (!scene)
+    {
+        return false;
+    }
+    auto renderer = Renderer::create(device, stream, *scene);
+    if (!renderer || renderer->environment() == nullptr)
+    {
+        return false;
+    }
+
+    auto output = device.create_buffer<float4>(1u);
+    Kernel1D kernel = [&](BufferFloat4 result) noexcept
+    {
+        auto swl = renderer->spectrum()->sample(0.5f);
+        auto center = renderer->environment()->evaluate(
+            make_float3(0.0f, 0.0f, 1.0f), swl, 0.0f, false);
+        auto sample = renderer->environment()->sample(
+            swl, 0.0f, make_float2(0.37f, 0.73f), false);
+        auto sample_evaluation = renderer->environment()->evaluate(
+            sample.wi, swl, 0.0f, false);
+        result.write(0u, make_float4(
+            center.L[0u], center.pdf, sample.eval.pdf, sample_evaluation.pdf));
+    };
+    auto shader = device.compile(kernel);
+    float4 value{};
+    stream << shader(output).dispatch(1u)
+           << output.copy_to(&value)
+           << synchronize();
+    return std::isfinite(value.x) && value.x > 0.0f &&
+           std::isfinite(value.y) && value.y > 0.0f &&
+           std::isfinite(value.z) && value.z > 0.0f &&
+           std::isfinite(value.w) && value.w > 0.0f &&
+           nearly_equal(value.z, value.w, 5.0e-4f);
+}
+
 } // namespace
 
 int main(int argc, char* argv[])
 {
     if (argc < 2)
     {
-        LUISA_WARNING("Usage: {} <backend>", argv[0]);
+        LUISA_WARNING("Usage: {} <backend> [environment.hdr]", argv[0]);
         return 1;
     }
     Context context{argv[0]};
@@ -486,6 +527,11 @@ int main(int argc, char* argv[])
     {
         LUISA_WARNING("Lat-long black/zero-scale fallback test failed.");
         return 7;
+    }
+    if (argc >= 3 && !test_external_hdr(device, stream, std::filesystem::path{argv[2]}))
+    {
+        LUISA_WARNING("External lat-long HDR smoke test failed for '{}'.", argv[2]);
+        return 8;
     }
     return 0;
 }

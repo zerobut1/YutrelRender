@@ -549,19 +549,60 @@ public:
 
     auto expected_continuous_pdf = 0.25f / (3.0f * std::acos(-1.0f));
     auto expected_delta_pdf      = 1.0f / 3.0f;
-    return nearly_equal(result[0u].x, 0.0f) &&
-           nearly_equal(result[0u].y, expected_continuous_pdf, 1e-6f) &&
-           nearly_equal(result[0u].w, 1.0f, 1e-5f) &&
-           dot(result[1u].xyz(), make_float3(1.0f, 0.0f, 0.0f)) > 0.999f &&
-           dot(result[2u].xyz(), make_float3(0.0f, 1.0f, 0.0f)) > 0.999f &&
-           nearly_equal(result[1u].w, expected_delta_pdf, 1e-6f) &&
-           nearly_equal(result[2u].w, expected_delta_pdf, 1e-6f) &&
-           nearly_equal(result[3u].x, 1.0f) &&
-           nearly_equal(result[3u].y, 1.0f) &&
-           nearly_equal(result[3u].z, expected_continuous_pdf, 1e-6f) &&
-           nearly_equal(result[0u].z, result[3u].w, 1e-6f) &&
-           nearly_equal(result[4u].x, result[3u].w, 1e-6f) &&
-           result[4u].y > result[4u].z;
+    auto sampling_valid = nearly_equal(result[0u].x, 0.0f) &&
+                          nearly_equal(result[0u].y, expected_continuous_pdf, 1e-6f) &&
+                          nearly_equal(result[0u].w, 1.0f, 1e-5f) &&
+                          dot(result[1u].xyz(), make_float3(1.0f, 0.0f, 0.0f)) > 0.999f &&
+                          dot(result[2u].xyz(), make_float3(0.0f, 1.0f, 0.0f)) > 0.999f &&
+                          nearly_equal(result[1u].w, expected_delta_pdf, 1e-6f) &&
+                          nearly_equal(result[2u].w, expected_delta_pdf, 1e-6f) &&
+                          nearly_equal(result[3u].x, 1.0f) &&
+                          nearly_equal(result[3u].y, 1.0f) &&
+                          nearly_equal(result[3u].z, expected_continuous_pdf, 1e-6f) &&
+                          nearly_equal(result[0u].z, result[3u].w, 1e-6f) &&
+                          nearly_equal(result[4u].x, result[3u].w, 1e-6f) &&
+                          result[4u].y > result[4u].z;
+    if (!sampling_valid)
+    {
+        return false;
+    }
+
+    auto external_light = ExternalDirectionalLightState{
+        .color = make_float3(0.25f, 0.5f, 1.0f),
+        .illuminance_lux = 7.0f,
+        .direction = make_float3(0.0f, 0.0f, -1.0f),
+        .enabled = 1u,
+    };
+    CommandBuffer update_commands{stream};
+    if (!renderer->update_external_scene(update_commands, {}, external_light))
+    {
+        update_commands << commit();
+        return false;
+    }
+    update_commands << synchronize();
+
+    auto updated_output = device.create_buffer<float4>(2u);
+    Kernel1D updated_kernel = [&renderer](BufferFloat4 output) noexcept
+    {
+        auto swl = renderer->spectrum()->sample(0.5f);
+        auto updated = renderer->environment()->sample(
+            swl, 0.0f, make_float2(0.5f, 0.2f), false);
+        output.write(0u, make_float4(updated.wi, updated.eval.pdf));
+        output.write(1u, make_float4(
+            ite(updated.delta, 1.0f, 0.0f),
+            updated.eval.L[0u],
+            0.0f,
+            0.0f));
+    };
+    auto updated_shader = device.compile(updated_kernel);
+    std::array<float4, 2u> updated_result{};
+    stream << updated_shader(updated_output).dispatch(1u)
+           << updated_output.copy_to(updated_result.data())
+           << synchronize();
+    return dot(updated_result[0u].xyz(), external_light.direction) > 0.999f &&
+           nearly_equal(updated_result[0u].w, expected_delta_pdf, 1e-6f) &&
+           nearly_equal(updated_result[1u].x, 1.0f) &&
+           std::isfinite(updated_result[1u].y) && updated_result[1u].y > 0.0f;
 }
 
 } // namespace
