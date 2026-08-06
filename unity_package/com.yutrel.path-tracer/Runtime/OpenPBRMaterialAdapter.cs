@@ -39,6 +39,29 @@ namespace Yutrel.PathTracer
         }
     }
 
+    /// <summary>
+    /// Unity Alpha Clip state for an OpenPBR material. The native plugin
+    /// converts the BaseColor texture alpha into a binary mask
+    /// (tex.a * <see cref="baseColorAlpha"/> >= <see cref="cutoff"/>) and wraps
+    /// the OpenPBR surface in an OpacitySurface. Changes to any of these
+    /// fields must trigger a full mesh/scene rebuild (never the lightweight
+    /// material-only update path), because they alter the opaque/non-opaque
+    /// geometry classification baked into the compiled scene.
+    /// </summary>
+    internal readonly struct OpenPBRAlphaClipData
+    {
+        internal readonly float baseColorAlpha;
+        internal readonly float cutoff;
+        internal readonly bool enabled;
+
+        internal OpenPBRAlphaClipData(float baseColorAlpha, float cutoff, bool enabled)
+        {
+            this.baseColorAlpha = baseColorAlpha;
+            this.cutoff = cutoff;
+            this.enabled = enabled;
+        }
+    }
+
     internal enum OpenPBRParameter
     {
         BaseWeight,
@@ -126,6 +149,14 @@ namespace Yutrel.PathTracer
     {
         internal const string MaterialTypeTag = "YutrelMaterialType";
         internal const string MaterialTypeValue = "OpenPBR";
+
+        // Standard OpenPBR shader Alpha Clip properties.
+        internal const string StandardUseAlphaClipProperty = "_OpenPBRUseAlphaClip";
+        internal const string StandardAlphaCutoffProperty = "_OpenPBRAlphaCutoff";
+
+        // Sponza shader (YutrelRP/Sponza/OpenPBR) Alpha Clip properties.
+        internal const string SponzaUseAlphaClipProperty = "_UseAlphaClip";
+        internal const string SponzaAlphaCutoffProperty = "_AlphaCutoff";
 
         private static readonly OpenPBRPropertyMapping[] DefaultMappings =
         {
@@ -292,6 +323,89 @@ namespace Yutrel.PathTracer
                 Mathf.Clamp01(specularRoughnessAnisotropy),
                 Mathf.Max(specularIor, 1.0e-6f));
             return true;
+        }
+
+        /// <summary>
+        /// Reads the Alpha Clip state of an OpenPBR material.
+        ///
+        /// `baseColorAlpha` is the alpha channel of the shader's BaseColor
+        /// property (standard OpenPBR: `_OpenPBRBaseColor`; Sponza: `_BaseColor`)
+        /// and multiplies the BaseColor texture alpha like Unity shaders do.
+        /// The toggle/cutoff properties are Sponza's `_UseAlphaClip`/
+        /// `_AlphaCutoff` when present, otherwise the standard OpenPBR
+        /// `_OpenPBRUseAlphaClip`/`_OpenPBRAlphaCutoff`. Missing properties are
+        /// treated as disabled; invalid values are reported once and disable
+        /// Alpha Clip.
+        /// </summary>
+        internal static bool TryReadAlphaClip(Material material, out OpenPBRAlphaClipData data)
+        {
+            data = default;
+            if (!IsOpenPBR(material))
+            {
+                return false;
+            }
+
+            // BaseColor alpha factor, following Unity shader semantics.
+            var baseColorAlpha = 1.0f;
+            var baseColorProperty = FindBaseColorProperty(material);
+            if (baseColorProperty != null && material.HasProperty(baseColorProperty))
+            {
+                baseColorAlpha = material.GetColor(baseColorProperty).a;
+                if (!IsFinite(baseColorAlpha))
+                {
+                    NativeBridge.ReportErrorOnce(
+                        $"Yutrel OpenPBR Material '{material.name}' has a non-finite BaseColor alpha; " +
+                        "Alpha Clip is disabled.");
+                    baseColorAlpha = 0.0f;
+                }
+                else
+                {
+                    baseColorAlpha = Mathf.Max(baseColorAlpha, 0.0f);
+                }
+            }
+
+            // Sponza registers its own property names; everything else uses the
+            // standard OpenPBR names.
+            var useAlphaClipProperty = material.HasProperty(SponzaUseAlphaClipProperty)
+                ? SponzaUseAlphaClipProperty
+                : StandardUseAlphaClipProperty;
+            var alphaCutoffProperty = material.HasProperty(SponzaAlphaCutoffProperty)
+                ? SponzaAlphaCutoffProperty
+                : StandardAlphaCutoffProperty;
+            if (!material.HasProperty(useAlphaClipProperty) ||
+                !material.HasProperty(alphaCutoffProperty))
+            {
+                // Missing Alpha Clip properties: disabled.
+                data = new OpenPBRAlphaClipData(baseColorAlpha, 0.0f, false);
+                return true;
+            }
+
+            var enabled = material.GetFloat(useAlphaClipProperty) > 0.5f;
+            var cutoff = material.GetFloat(alphaCutoffProperty);
+            if (!IsFinite(cutoff) || cutoff < 0.0f || cutoff > 1.0f)
+            {
+                NativeBridge.ReportErrorOnce(
+                    $"Yutrel OpenPBR Material '{material.name}' has an invalid Alpha Clip cutoff; " +
+                    "Alpha Clip is disabled.");
+                data = new OpenPBRAlphaClipData(baseColorAlpha, 0.0f, false);
+                return true;
+            }
+            data = new OpenPBRAlphaClipData(baseColorAlpha, cutoff, enabled);
+            return true;
+        }
+
+        /// <summary>Property name backing the OpenPBR BaseColor, or null.</summary>
+        private static string FindBaseColorProperty(Material material)
+        {
+            foreach (var mapping in GetMappings(material))
+            {
+                if (mapping.propertyName != null &&
+                    mapping.parameter == OpenPBRParameter.BaseColor)
+                {
+                    return mapping.propertyName;
+                }
+            }
+            return null;
         }
 
         /// <summary>Content hash of the mapped properties (for material caching).</summary>

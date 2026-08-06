@@ -10,7 +10,7 @@ namespace Yutrel.PathTracer
     internal static class NativeBridge
     {
         private const string LibraryName = "YutrelUnityPlugin";
-        private const uint AbiVersion = 10;
+        private const uint AbiVersion = 11;
         private const int MaxEnvironmentPathByteCount = 32768;
         private const int ClearEventId = 0;
         private const int PathTraceEventId = 1;
@@ -72,6 +72,20 @@ namespace Yutrel.PathTracer
             public fixed float uvOffset[2];
         }
 
+        // Unity Alpha Clip state. The native plugin converts the BaseColor
+        // texture alpha into a binary mask (tex.a * baseColorAlpha >= cutoff)
+        // and wraps the OpenPBR surface in an OpacitySurface. Alpha Clip
+        // changes must ship as a full mesh update (never a material-only
+        // update), so SceneMaterialUpdateData deliberately carries no Alpha
+        // Clip fields.
+        [StructLayout(LayoutKind.Sequential)]
+        private struct AlphaClipAbi
+        {
+            public float baseColorAlpha;
+            public float cutoff;
+            public uint enabled;
+        }
+
         [StructLayout(LayoutKind.Sequential)]
         private unsafe struct SceneSubMeshData
         {
@@ -94,6 +108,7 @@ namespace Yutrel.PathTracer
             public OpenPBRTextureSlotAbi specularRoughness;
             public OpenPBRTextureSlotAbi baseMetalness;
             public OpenPBRTextureSlotAbi materialAo;
+            public AlphaClipAbi alphaClip;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -287,6 +302,7 @@ namespace Yutrel.PathTracer
             internal readonly OpenPBRTextureSlot specularRoughness;
             internal readonly OpenPBRTextureSlot baseMetalness;
             internal readonly OpenPBRTextureSlot materialAo;
+            internal readonly OpenPBRAlphaClipData alphaClip;
 
             internal SceneSubMeshUpdate(
                 uint indexOffset,
@@ -307,7 +323,8 @@ namespace Yutrel.PathTracer
                 OpenPBRTextureSlot normal,
                 OpenPBRTextureSlot specularRoughness,
                 OpenPBRTextureSlot baseMetalness,
-                OpenPBRTextureSlot materialAo)
+                OpenPBRTextureSlot materialAo,
+                OpenPBRAlphaClipData alphaClip)
             {
                 this.indexOffset = indexOffset;
                 this.indexCount = indexCount;
@@ -328,6 +345,7 @@ namespace Yutrel.PathTracer
                 this.specularRoughness = specularRoughness;
                 this.baseMetalness = baseMetalness;
                 this.materialAo = materialAo;
+                this.alphaClip = alphaClip;
             }
         }
 
@@ -505,7 +523,7 @@ namespace Yutrel.PathTracer
         {
 #if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
             if (sizeof(OpenPBRMaterialAbi) != 52 || sizeof(OpenPBRTextureSlotAbi) != 40 ||
-                sizeof(SceneSubMeshData) != 328 ||
+                sizeof(AlphaClipAbi) != 12 || sizeof(SceneSubMeshData) != 344 ||
                 sizeof(SceneMaterialUpdateData) != 80 || sizeof(EnvironmentData) != 24 ||
                 sizeof(SceneDeltaData) != 112)
             {
@@ -601,6 +619,9 @@ namespace Yutrel.PathTracer
                             subMeshDescriptor.openPbr.specularRoughnessAnisotropy =
                                 subMesh.openPbr.specularRoughnessAnisotropy;
                             subMeshDescriptor.openPbr.specularIor = subMesh.openPbr.specularIor;
+                            subMeshDescriptor.alphaClip.baseColorAlpha = subMesh.alphaClip.baseColorAlpha;
+                            subMeshDescriptor.alphaClip.cutoff = subMesh.alphaClip.cutoff;
+                            subMeshDescriptor.alphaClip.enabled = subMesh.alphaClip.enabled ? 1u : 0u;
                             if (subMesh.emissivePixels != null)
                             {
                                 var pixelsHandle = GCHandle.Alloc(subMesh.emissivePixels, GCHandleType.Pinned);

@@ -1,5 +1,6 @@
 #include "unity_device_config.h"
 #include "environment_state.h"
+#include "alpha_clip_texture.h"
 
 #include <IUnityGraphics.h>
 #include <IUnityInterface.h>
@@ -40,6 +41,7 @@
 #include "spectrum/hero.h"
 #include "surfaces/diffuse.h"
 #include "surfaces/openpbr.h"
+#include "surfaces/opacity.h"
 #include "textures/constant.h"
 #include "textures/image.h"
 #include "textures/scale.h"
@@ -49,7 +51,7 @@ namespace yutrel::unity {
 using namespace luisa;
 using namespace luisa::compute;
 
-constexpr uint32_t abi_version = 10u;
+constexpr uint32_t abi_version = 11u;
 constexpr int clear_event_id = 0;
 constexpr int path_trace_event_id = 1;
 constexpr size_t external_instance_capacity = 4096u;
@@ -125,6 +127,7 @@ struct SceneSubMeshData {
     OpenPBRTextureSlotData specular_roughness;
     OpenPBRTextureSlotData base_metalness;
     OpenPBRTextureSlotData material_ao;
+    AlphaClipData alpha_clip;
 };
 
 struct SceneMeshDelta {
@@ -145,7 +148,8 @@ struct SceneMeshDelta {
 
 static_assert(sizeof(OpenPBRMaterialData) == 52u);
 static_assert(sizeof(OpenPBRTextureSlotData) == 40u);
-static_assert(sizeof(SceneSubMeshData) == 328u);
+static_assert(sizeof(AlphaClipData) == 12u);
+static_assert(sizeof(SceneSubMeshData) == 344u);
 static_assert(sizeof(SceneMeshDelta) == 136u);
 
 struct DirectionalLightData {
@@ -268,6 +272,7 @@ struct MeshSnapshot {
         Slot specular_roughness;
         Slot base_metalness;
         Slot material_ao;
+        AlphaClipData alpha_clip{};
 
         [[nodiscard]] bool emissive() const noexcept {
             return emissive_luminance_nits > 0.0f && any(emissive_color > 0.0f);
@@ -508,7 +513,8 @@ struct DesiredScene {
             !std::isfinite(source.uv_offset[0]) || !std::isfinite(source.uv_offset[1]) ||
             source.material_type > SceneMaterialType::openpbr ||
             (source.material_type == SceneMaterialType::openpbr &&
-             (source.material_id == 0u || !valid_openpbr_params))) {
+             (source.material_id == 0u || !valid_openpbr_params)) ||
+            !valid_alpha_clip(source.alpha_clip)) {
             return false;
         }
         MeshSnapshot::SubMesh submesh{
@@ -524,6 +530,7 @@ struct DesiredScene {
             .material_id = source.material_id,
             .material_type = source.material_type,
             .openpbr = source.openpbr,
+            .alpha_clip = source.alpha_clip,
         };
         submesh.emissive_pixels.reserve(texture_pixel_count);
         for (auto pixel_index = 0ull; pixel_index < texture_pixel_count; pixel_index++) {
@@ -921,11 +928,12 @@ using MaterialTextureRegistry = luisa::unordered_map<uint64_t, luisa::unique_ptr
             // applied here: OpenPBRSurface has no AO parameter (matches the
             // YutrelRP deferred path, where material AO does not affect direct
             // lighting). Revisit when the renderer gains AO support.
+            auto base_color = texture_slot(1u, submesh.base_color, make_float4(material.base_color[0], material.base_color[1], material.base_color[2], 1.0f));
             auto surface = builder.add_anonymous_surface<OpenPBRSurfaceSpec>(
                 source,
                 OpenPBRSurfaceParams{
                     .base_weight = material_texture(0u, make_float4(material.base_weight, 0.0f, 0.0f, 0.0f)),
-                    .base_color = texture_slot(1u, submesh.base_color, make_float4(material.base_color[0], material.base_color[1], material.base_color[2], 1.0f)),
+                    .base_color = base_color,
                     .base_metalness = texture_slot(2u, submesh.base_metalness, make_float4(material.base_metalness, 0.0f, 0.0f, 0.0f)),
                     .base_diffuse_roughness = material_texture(3u, make_float4(material.base_diffuse_roughness, 0.0f, 0.0f, 0.0f)),
                     .specular_weight = material_texture(4u, make_float4(material.specular_weight, 0.0f, 0.0f, 0.0f)),
@@ -936,6 +944,26 @@ using MaterialTextureRegistry = luisa::unordered_map<uint64_t, luisa::unique_ptr
                     .normal = normal_texture(submesh.normal),
                     .two_sided = submesh.double_sided,
                 });
+            // Unity Alpha Clip: convert the BaseColor alpha into a binary mask
+            // (tex.a * base_color_alpha >= cutoff) and wrap the OpenPBR surface
+            // in an OpacitySurface. The mask reuses the same BaseColor TextureRef,
+            // so no duplicate texture upload happens; a 0/1 mask makes the
+            // existing `alpha_skip()` accept/reject intersections deterministically
+            // and `maybe_non_opaque()` enables candidate filtering for this
+            // geometry. Alpha Clip changes ship as full mesh updates (never the
+            // lightweight material-only path), so the opaque/non-opaque state
+            // always matches the compiled Geometry.
+            if (submesh.alpha_clip.enabled) {
+                auto mask = builder.add_anonymous_texture<UnityAlphaClipTextureSpec>(
+                    source,
+                    base_color,
+                    submesh.alpha_clip.base_color_alpha,
+                    submesh.alpha_clip.cutoff);
+                surface = builder.add_anonymous_surface<OpacitySurfaceSpec>(
+                    source,
+                    surface,
+                    mask);
+            }
             material_surfaces.emplace(submesh.material_id, surface);
             return surface;
         };

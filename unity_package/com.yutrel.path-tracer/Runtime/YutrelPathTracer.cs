@@ -652,6 +652,7 @@ namespace Yutrel.PathTracer
                 var materialId = 0ul;
                 var materialType = NativeBridge.SceneMaterialType.FallbackDiffuse;
                 var openPbr = default(OpenPBRMaterialData);
+                var alphaClip = default(OpenPBRAlphaClipData);
 
                 if (material == null)
                 {
@@ -668,6 +669,7 @@ namespace Yutrel.PathTracer
                     if (OpenPBRMaterialAdapter.TryRead(material, out openPbr))
                     {
                         materialType = NativeBridge.SceneMaterialType.OpenPBR;
+                        OpenPBRMaterialAdapter.TryReadAlphaClip(material, out alphaClip);
                     }
                     else if (OpenPBRMaterialAdapter.IsOpenPBR(material))
                     {
@@ -793,7 +795,8 @@ namespace Yutrel.PathTracer
                     normalSlot,
                     specularRoughnessSlot,
                     baseMetalnessSlot,
-                    materialAoSlot);
+                    materialAoSlot,
+                    alphaClip);
             }
 
             private static string EmissiveTexturePropertyFor(Material material)
@@ -1020,6 +1023,10 @@ namespace Yutrel.PathTracer
                         {
                             hash = hash * 397 ^ OpenPBRMaterialAdapter.ComputeSignature(material);
                             hash = HashOpenPBRTextures(material, hash);
+                            if (OpenPBRMaterialAdapter.TryReadAlphaClip(material, out var alphaClip))
+                            {
+                                hash = HashAlphaClip(hash, alphaClip);
+                            }
                         }
                         var textureProperty = EmissiveTexturePropertyFor(material);
                         if (textureProperty == null)
@@ -1064,6 +1071,17 @@ namespace Yutrel.PathTracer
                                    material.GetTextureOffset(mapping.propertyName).GetHashCode();
                         }
                     }
+                }
+                return hash;
+            }
+
+            private static int HashAlphaClip(int hash, OpenPBRAlphaClipData alphaClip)
+            {
+                unchecked
+                {
+                    hash = hash * 397 ^ (alphaClip.enabled ? 1 : 0);
+                    hash = hash * 397 ^ alphaClip.cutoff.GetHashCode();
+                    hash = hash * 397 ^ alphaClip.baseColorAlpha.GetHashCode();
                 }
                 return hash;
             }
@@ -1131,6 +1149,10 @@ namespace Yutrel.PathTracer
                         if (isOpenPbr)
                         {
                             restHash = HashOpenPBRTextures(material, restHash);
+                            if (OpenPBRMaterialAdapter.TryReadAlphaClip(material, out var alphaClip))
+                            {
+                                restHash = HashAlphaClip(restHash, alphaClip);
+                            }
                         }
                     }
                     state = new SubMeshMaterialState
